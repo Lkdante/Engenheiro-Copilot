@@ -1,0 +1,29 @@
+# Dependências
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Ambiente / segredos
+.env
+!.env.example
+
+# Banco local
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Expo
+frontend/.expo/
+frontend/dist/
+frontend/web-build/
+frontend/.metro-cache/
+frontend/expo-env.d.ts
+
+# Editores / SO
+.idea/
+.vscode/
+.DS_Store
+*.zip

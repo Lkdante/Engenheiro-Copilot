@@ -1,0 +1,149 @@
+{
+  "app_name": "Engenheiro de Campo IA",
+  "personality": "5 Brutalist Mobile",
+  "personality_one_liner": "A rugged, command-center copilot that treats the interface like a high-contrast blueprint: function-first, immediately legible in bright sun, and engineered for the job site.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#09090B",
+    "surfaceSecondary": "#F4F4F5",
+    "onSurfaceSecondary": "#18181B",
+    "surfaceTertiary": "#E4E4E7",
+    "onSurfaceTertiary": "#27272A",
+    "surfaceInverse": "#09090B",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#FF5E00",
+    "brandPrimary": "#FF5E00",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#CC4B00",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FFEFE5",
+    "onBrandTertiary": "#FF5E00",
+    "success": "#16A34A",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#09090B",
+    "error": "#DC2626",
+    "onError": "#FFFFFF",
+    "info": "#52525B",
+    "onInfo": "#FFFFFF",
+    "border": "#E4E4E7",
+    "borderStrong": "#09090B",
+    "divider": "#E4E4E7"
+  },
+  "typography": {
+    "displayFontFamily": "Space Grotesk",
+    "textFontFamily": "IBM Plex Mono",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use rigid grids, hard alignment, and visible spacing systems. Generous but structural breathing room.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 0,
+    "md": 0,
+    "lg": 0,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": false,
+    "do's": [],
+    "dont's": [
+      "Do not use blur or glassmorphism. This is a Brutalist app that relies on solid high-contrast backgrounds and thick 2pt borders for elevation."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "haptics": {
+    "enabled": true,
+    "events": {
+      "primary_button_press": "impactLight",
+      "tab_change": "selection",
+      "voice_record_start": "impactMedium",
+      "voice_record_stop": "impactMedium",
+      "checklist_toggle": "selection",
+      "error_alert": "notificationError",
+      "success_action": "notificationSuccess"
+    }
+  },
+  "screens": [
+    {
+      "name": "Copiloto (Home)",
+      "purpose": "Task-aware AI workspace combining daily metrics with a docked conversational copilot for RDO logging.",
+      "states": {
+        "loading": "High-contrast block skeleton loading with mono counters.",
+        "empty": "Illustration of clipboard/hardhat with 'Nenhuma atividade recente' and primary prompt.",
+        "error": "Hard red border with 'ERRO DE SINCRONIZAÇÃO' in mono font and bold Retry button."
+      },
+      "layout": "Message stream takes full viewport width with 16px padding. Composer is docked to the bottom with 44px+ touch targets for voice/send. Important daily KPIs sit at the top as solid high-contrast summary tiles with thick 2pt borders."
+    },
+    {
+      "name": "Inspeções",
+      "purpose": "A rugged list of smart checklists (masonry, concreting) and risk detection items.",
+      "states": {
+        "loading": "Skeleton rows spanning edge-to-edge.",
+        "empty": "Empty checklist visual with 'Todas as inspeções concluídas'.",
+        "error": "Red block indicating failure to load checklists."
+      },
+      "layout": "Edge-to-edge sections with thick dividers. Each row uses oversized grotesk typography for the service type and mono accents for the date/status. A fixed primary CTA to 'NOVA INSPEÇÃO' stays anchored above the safe area bottom."
+    },
+    {
+      "name": "Obra (Dashboard)",
+      "purpose": "Executive dashboard showing physical progress, PPE tracking, and non-conformities.",
+      "states": {
+        "loading": "Mono loaders (e.g., [ ///--- ]).",
+        "empty": "No data available for this project block.",
+        "error": "Data fetch error with mechanical reload action."
+      },
+      "layout": "Grid of metrics. 2-col wrap layout with flex-between. Cards have 2pt strong borders and no border radius. Large bold numbers (Space Grotesk) and mono subtitles."
+    }
+  ],
+  "images": {
+    "hero_construction_backdrop": {
+      "url": "https://images.pexels.com/photos/18080900/pexels-photo-18080900.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Construction site concrete walls and scaffolding"
+    },
+    "empty_clipboard": {
+      "url": "https://images.unsplash.com/photo-1651760680066-db9d32bd0357?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwxfHxjbGlwYm9hcmQlMjBjaGVja2xpc3QlMjBjb25zdHJ1Y3Rpb24lMjBpbGx1c3RyYXRpb258ZW58MHx8fHwxNzgzMjA1Nzk0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Empty clipboard checklist"
+    },
+    "safety_helmet_accent": {
+      "url": "https://images.unsplash.com/photo-1768158988512-ad31657fe5b8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTV8MHwxfHNlYXJjaHwxfHxzYWZldHklMjBoZWxtZXQlMjBoYXJkaGF0JTIwY29uc3RydWN0aW9uJTIwc2l0ZXxlbnwwfHx8fDE3ODMyMDU3OTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Yellow construction hardhat"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the 5 Brutalist Mobile personality. Use 0 border radius everywhere to evoke an engineered, mechanical aesthetic.",
+    "Do not use ANY shades of blue, indigo, or purple. Stick to the stark white, black, grey, and signal orange palette provided.",
+    "Use 2pt solid borders (`borderStrong`) for primary cards and buttons. Shadows are strictly forbidden; elevation is shown through layout, borders, and high contrast.",
+    "Ensure touch targets are at least 44x44pt. Space things generously using the provided spacing scale.",
+    "In Copilot/Home, dock the AI chat composer at the bottom over a solid background (no glass). The scroll view should clear this sticky footer.",
+    "Avoid emojis in the UI entirely. Use the Phosphor icon set for navigation and actions.",
+    "Apply gradient scrims (transparent to >70% surfaceInverse) if text is ever placed over an image."
+  ]
+}
