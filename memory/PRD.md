@@ -22,6 +22,14 @@
 9. **Dashboard Executivo** — KPIs em tempo real: avanço físico, NCs, checklists, RDOs, EPIs, fotos, qualidade.
 10. **Integrações** — Excel (exportar obra, importar EPIs) e WhatsApp (Cloud API ou link wa.me) FUNCIONANDO; ERP, BIM, Drive, MS365 planejados.
 
+## Obras (multi-obra)
+- Fluxo: Menu de Obras público (`GET /public/obras?q=`, `GET /public/obras/:id`) → Login → Obra
+- Configurações: tema claro/escuro (frio)/sistema, tamanho de texto, alto contraste, exibição/ordenação, manter conectado
+- Seleção da obra; obra ativa enviada no cabeçalho `X-Obra-Id`
+- Campos: nome, localidade, início, término previsto, estágio (%), empresa responsável, ART, porte, nº funcionários
+- Funcionários importados por planilha Excel (tabela `workers`)
+- Endpoints: `GET/POST /obras`, `GET/PUT /obras/:id`, `GET/POST /obras/:id/workers`, `POST /obras/:id/workers/import`, `GET /integrations/excel/workers-template`
+
 ## User Roles
 - `admin`, `engenheiro`, `tec_seguranca`, `almoxarife`, `mestre_obras`, `estagiario`, `diretor`
 

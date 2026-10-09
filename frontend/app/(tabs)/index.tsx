@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { api, getStoredUser, clearAuth } from "@/src/api";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { useFocusEffect, useRouter } from "expo-router";
+import { api, getStoredUser, clearAuth, getActiveObra } from "@/src/api";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string; created_at?: string };
 
@@ -16,6 +17,8 @@ const QUICK = [
 ];
 
 export default function Copiloto() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -23,13 +26,28 @@ export default function Copiloto() {
   const [user, setUser] = useState<any>(null);
   const [mode, setMode] = useState<"ai" | "local" | null>(null);
   const scrollRef = useRef<ScrollView>(null);
-  const sessionId = useRef<string>(`sess-${Date.now()}`).current;
+  const sessionRef = useRef<string>(`sess-${Date.now()}`);
+  const obraRef = useRef<string | null>(null);
+  const [obraName, setObraName] = useState("");
+
+  // Ao trocar de obra, começa uma conversa nova (o contexto do copiloto é da obra ativa)
+  useFocusEffect(useCallback(() => {
+    (async () => {
+      const o = await getActiveObra();
+      setObraName(o?.name || "");
+      if (obraRef.current && o?.id !== obraRef.current) {
+        setMessages([]);
+        sessionRef.current = `sess-${Date.now()}`;
+      }
+      obraRef.current = o?.id || null;
+    })();
+  }, []));
 
   useEffect(() => { (async () => setUser(await getStoredUser()))(); }, []);
 
   const logout = async () => {
     await clearAuth();
-    router.replace("/(auth)/login");
+    router.replace("/obras");
   };
 
   const send = async (text?: string) => {
@@ -41,7 +59,7 @@ export default function Copiloto() {
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     try {
-      const r = await api<{ message: string; id: string; mode?: "ai" | "local" }>("/copilot/chat", { method: "POST", body: { session_id: sessionId, message: msg } });
+      const r = await api<{ message: string; id: string; mode?: "ai" | "local" }>("/copilot/chat", { method: "POST", body: { session_id: sessionRef.current, message: msg } });
       setMessages((p) => [...p, { id: r.id, role: "assistant", content: r.message }]);
       if (r.mode) setMode(r.mode);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
@@ -56,7 +74,7 @@ export default function Copiloto() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.hLabel}>COPILOTO IA</Text>
+          <Text style={styles.hLabel} numberOfLines={1}>{obraName ? `COPILOTO • ${obraName.toUpperCase()}` : "COPILOTO IA"}</Text>
           <Text style={styles.hTitle}>Olá, {user?.name?.split(" ")[0] || "Engenheiro"}</Text>
         </View>
         <View style={styles.statusDot}>
@@ -119,7 +137,7 @@ export default function Copiloto() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong, backgroundColor: colors.surface },
   logoutBtn: { flexDirection: "row", alignItems: "center", gap: spacing.xs, borderWidth: 2, borderColor: colors.error, paddingHorizontal: spacing.sm, paddingVertical: 6, marginRight: spacing.sm },
@@ -146,4 +164,4 @@ const styles = StyleSheet.create({
   composer: { flexDirection: "row", padding: spacing.md, borderTopWidth: 2, borderTopColor: colors.borderStrong, backgroundColor: colors.surface, gap: spacing.sm, alignItems: "flex-end" },
   composerInput: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingHorizontal: spacing.md, paddingVertical: spacing.md, minHeight: 48, maxHeight: 120, fontFamily: fonts.mono, fontSize: fontSize.base, color: colors.onSurface, backgroundColor: colors.surface },
   sendBtn: { width: 48, height: 48, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
-});
+}));

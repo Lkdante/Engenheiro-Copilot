@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, PanResponder, Modal, Platform } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 const CANVAS_W = 320;
 const CANVAS_H = 180;
@@ -32,6 +33,8 @@ const b64 = (s: string): string => {
 };
 
 export default function SignatureCanvas({ visible, onClose, onSave }: Props) {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const [paths, setPaths] = useState<string[]>([]);
   const currentPath = useRef<string>("");
   const [, setTick] = useState(0);
@@ -168,7 +171,7 @@ export default function SignatureCanvas({ visible, onClose, onSave }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   backdrop: { flex: 1, backgroundColor: "rgba(9,9,11,0.7)", justifyContent: "center", alignItems: "center", padding: spacing.lg },
   sheet: { width: "100%", maxWidth: 380, backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md },
   head: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
@@ -183,4 +186,4 @@ const styles = StyleSheet.create({
   secondaryBtnText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5, color: colors.onSurface },
   primaryBtn: { flex: 1, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.md, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: spacing.sm, minHeight: 48 },
   primaryBtnText: { color: colors.onBrand, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5 },
-});
+}));

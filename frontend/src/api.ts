@@ -54,8 +54,35 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
 
 async function authHeaders(auth: boolean | undefined): Promise<Record<string, string>> {
   if (auth === false) return {};
+  const headers: Record<string, string> = {};
   const token = await storage.secureGet<string>("auth_token", "");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const obra = await getActiveObra();
+  if (obra?.id) headers["X-Obra-Id"] = obra.id;
+  return headers;
+}
+
+// ---------------------------------------------------------------- OBRA ATIVA
+export type ObraRef = { id: string; name: string };
+
+export async function getActiveObra(): Promise<ObraRef | null> {
+  const raw = await storage.getItem<string>("active_obra", "");
+  if (!raw) return null;
+  try { return JSON.parse(raw) as ObraRef; } catch { return null; }
+}
+
+export async function setActiveObra(obra: ObraRef) {
+  await storage.setItem("active_obra", JSON.stringify({ id: obra.id, name: obra.name }));
+}
+
+export async function clearActiveObra() {
+  await storage.removeItem("active_obra");
+}
+
+// Chamado quando a obra selecionada não existe mais no servidor.
+let onObraMissing: (() => void) | null = null;
+export function setObraMissingHandler(fn: (() => void) | null) {
+  onObraMissing = fn;
 }
 
 async function request(path: string, opts: ApiOptions = {}): Promise<Response> {
@@ -85,6 +112,10 @@ async function request(path: string, opts: ApiOptions = {}): Promise<Response> {
     if (res.status === 401 && opts.auth !== false) {
       await clearAuth();
       onUnauthorized?.();
+    }
+    if (res.status === 404 && msg.startsWith("Obra não encontrada") && !path.startsWith("/obras")) {
+      await clearActiveObra();
+      onObraMissing?.();
     }
     throw new ApiError(msg, res.status);
   }
@@ -140,6 +171,33 @@ export async function saveAuth(token: string, user: any) {
 export async function clearAuth() {
   await storage.secureRemove("auth_token");
   await storage.removeItem("auth_user");
+  await clearActiveObra();
+}
+
+/** Abre o seletor de arquivo para uma planilha .xlsx e devolve um FormData pronto para upload. */
+export async function pickSpreadsheet(field = "file"): Promise<{ form: FormData; name: string } | null> {
+  const DocumentPicker = await import("expo-document-picker");
+  const res = await DocumentPicker.getDocumentAsync({
+    type: [
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "application/octet-stream",
+    ],
+    copyToCacheDirectory: true,
+    multiple: false,
+  });
+  if (res.canceled || !res.assets?.[0]) return null;
+  const a: any = res.assets[0];
+  const name = a.name || "planilha.xlsx";
+  if (!/\.xlsx?$/i.test(name)) throw new ApiError("Selecione um arquivo Excel (.xlsx).", 400);
+  let form: FormData;
+  if (Platform.OS === "web" && a.file) {
+    form = new FormData();
+    form.append(field, a.file as File, name);
+  } else {
+    form = await fileForm(field, a.uri, name, a.mimeType || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  }
+  return { form, name };
 }
 
 export async function getStoredUser<T = any>(): Promise<T | null> {

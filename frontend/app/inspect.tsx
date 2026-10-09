@@ -5,9 +5,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { api, getStoredUser } from "@/src/api";
-import { colors, spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 export default function InspectScreen() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [image, setImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,7 +99,7 @@ export default function InspectScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   back: { width: 40, height: 40, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
@@ -124,4 +127,4 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
   actionBtn: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.md, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.surface },
   actionText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5 },
-});
+}));

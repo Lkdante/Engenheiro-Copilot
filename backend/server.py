@@ -18,7 +18,7 @@ from typing import Optional
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
@@ -80,7 +80,11 @@ def public_user(u: dict) -> dict:
 security = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+    x_obra_id: Optional[str] = Header(default=None),
+) -> dict:
+    """Usuário autenticado. A obra ativa vem do cabeçalho X-Obra-Id (obra escolhida no app)."""
     if not creds:
         raise HTTPException(401, "Não autenticado")
     try:
@@ -92,13 +96,26 @@ async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(securit
     user = db.find_one("users", "id = ?", [payload.get("sub")])
     if not user:
         raise HTTPException(401, "Usuário não encontrado")
-    return public_user(user)
+    user = public_user(user)
+    if x_obra_id:
+        if not db.find_one("obras", "id = ?", [x_obra_id]):
+            raise HTTPException(404, "Obra não encontrada — selecione outra obra")
+        user["obra_id"] = x_obra_id
+    return user
 
 
 def require_obra(user: dict) -> str:
     if not user.get("obra_id"):
-        raise HTTPException(400, "Usuário sem obra vinculada")
+        raise HTTPException(400, "Nenhuma obra selecionada")
     return user["obra_id"]
+
+
+OBRA_MANAGERS = {"admin", "engenheiro", "diretor"}
+
+
+def require_manager(user: dict) -> None:
+    if user.get("role") not in OBRA_MANAGERS:
+        raise HTTPException(403, "Apenas administrador, engenheiro ou diretor podem cadastrar/editar obras")
 
 
 # ====================== MODELS ======================
@@ -183,6 +200,42 @@ class QualityCreate(BaseModel):
     notes: Optional[str] = None
 
 
+OBRA_SIZES = ["pequeno", "medio", "grande"]
+
+
+class ObraIn(BaseModel):
+    name: str = Field(min_length=2, description="Nome da obra")
+    address: str = Field(min_length=2, description="Localidade")
+    start_date: str = Field(description="Início (AAAA-MM-DD)")
+    end_date: str = Field(description="Término previsto (AAAA-MM-DD)")
+    progress: float = Field(ge=0, le=100, description="Estágio atual (%)")
+    company: str = Field(min_length=2, description="Empresa responsável")
+    art: str = Field(min_length=1, description="Nº da ART")
+    size: str = Field(description="Porte: pequeno, medio ou grande")
+    workers_count: int = Field(default=0, ge=0, description="Nº de funcionários")
+
+
+class ObraUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    progress: Optional[float] = Field(default=None, ge=0, le=100)
+    company: Optional[str] = None
+    art: Optional[str] = None
+    size: Optional[str] = None
+    workers_count: Optional[int] = Field(default=None, ge=0)
+    status: Optional[str] = None
+
+
+class WorkerIn(BaseModel):
+    name: str = Field(min_length=2)
+    role: str = ""
+    company: str = ""
+    sector: str = ""
+    admission_date: Optional[str] = None
+
+
 class WhatsAppSendReq(BaseModel):
     to: Optional[str] = None
     message: str = Field(min_length=1)
@@ -264,7 +317,10 @@ def copilot_context(f: dict) -> str:
     if not f:
         return ""
     obra, k = f.get("obra") or {}, f.get("kpis", {})
-    ctx = (f"[CONTEXTO DA OBRA]\nObra: {obra.get('name', 'N/A')}\nEndereço: {obra.get('address', 'N/A')}\n"
+    ctx = (f"[CONTEXTO DA OBRA]\nObra: {obra.get('name', 'N/A')}\nLocalidade: {obra.get('address', 'N/A')}\n"
+           f"Empresa responsável: {obra.get('company') or 'N/A'} | ART: {obra.get('art') or 'N/A'} | Porte: {obra.get('size') or 'N/A'}\n"
+           f"Início: {obra.get('start_date') or 'N/A'} | Término previsto: {obra.get('end_date') or 'N/A'}\n"
+           f"Funcionários: {obra.get('workers_count') or 0}\n"
            f"Avanço físico: {obra.get('progress', 0)}%\nNão conformidades abertas: {len(f['ncs'])}\n")
     ctx += "".join(f"  - [{n['severity'].upper()}] {n['title']}\n" for n in f["ncs"][:8])
     ctx += f"Checklists em andamento: {len(f['checklists_open'])}\n"
@@ -649,9 +705,164 @@ async def alerts_list(user: dict = Depends(get_current_user)):
     return {"items": compute_alerts(user.get("obra_id"))}
 
 
+# ---------------------- OBRAS ----------------------
+def _parse_date(value: str, label: str) -> str:
+    v = (value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(v, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise HTTPException(422, f"{label} inválida — use DD/MM/AAAA")
+
+
+def _validate_obra(data: dict) -> dict:
+    if "start_date" in data:
+        data["start_date"] = _parse_date(data["start_date"], "Data de início")
+    if "end_date" in data:
+        data["end_date"] = _parse_date(data["end_date"], "Término previsto")
+    if data.get("start_date") and data.get("end_date") and data["end_date"] < data["start_date"]:
+        raise HTTPException(422, "O término previsto não pode ser antes do início")
+    if "size" in data:
+        size = (data["size"] or "").lower().replace("é", "e")
+        if size not in OBRA_SIZES:
+            raise HTTPException(422, "Porte inválido — use pequeno, médio ou grande")
+        data["size"] = size
+    for k in ("name", "address", "company", "art"):
+        if k in data and isinstance(data[k], str):
+            data[k] = data[k].strip()
+    return data
+
+
+def obra_summary(o: dict) -> dict:
+    oid = o["id"]
+    registered = db.count("workers", "obra_id = ?", [oid])
+    days_left = None
+    if o.get("end_date"):
+        try:
+            days_left = (datetime.strptime(o["end_date"], "%Y-%m-%d").date() - datetime.now(timezone.utc).date()).days
+        except ValueError:
+            pass
+    return {
+        **o,
+        "workers_registered": registered,
+        "workers_total": max(o.get("workers_count") or 0, registered),
+        "days_left": days_left,
+        "nc_open": db.count("nonconformities", "obra_id = ? AND status != 'resolvido'", [oid]),
+        "nc_critical": db.count("nonconformities", "obra_id = ? AND severity = 'critica' AND status != 'resolvido'", [oid]),
+    }
+
+
+def _get_obra(obra_id: str) -> dict:
+    o = db.find_one("obras", "id = ?", [obra_id])
+    if not o:
+        raise HTTPException(404, "Obra não encontrada")
+    return o
+
+
+# ---- Menu público: qualquer pessoa vê as obras e suas especificações (sem login) ----
+PUBLIC_OBRA_FIELDS = ("id", "name", "address", "start_date", "end_date", "progress", "company", "art", "size",
+                      "status", "created_at", "updated_at")
+
+
+def public_obra(o: dict) -> dict:
+    s = obra_summary(o)
+    out = {k: s.get(k) for k in PUBLIC_OBRA_FIELDS}
+    out["workers_total"] = s["workers_total"]
+    out["days_left"] = s["days_left"]
+    out["status"] = out.get("status") or "ativa"
+    return out
+
+
+@api.get("/public/obras")
+async def public_obras(q: str = Query("", max_length=100), include_finished: bool = Query(True)):
+    where, params = "COALESCE(status,'ativa') != 'arquivada'", []
+    if q.strip():
+        where += " AND name LIKE ? COLLATE NOCASE"
+        params.append(f"%{q.strip()}%")
+    if not include_finished:
+        where += " AND COALESCE(progress,0) < 100"
+    items = [public_obra(o) for o in db.find("obras", where, params, order="created_at DESC", limit=500)]
+    return {"items": items}
+
+
+@api.get("/public/obras/{obra_id}")
+async def public_obra_get(obra_id: str):
+    return public_obra(_get_obra(obra_id))
+
+
 @api.get("/obras")
 async def obras_list(user: dict = Depends(get_current_user)):
-    return {"items": db.find("obras", order="created_at ASC", limit=50)}
+    return {"items": [obra_summary(o) for o in db.find("obras", "COALESCE(status,'ativa') != 'arquivada'", order="created_at DESC", limit=200)],
+            "can_manage": user.get("role") in OBRA_MANAGERS}
+
+
+@api.post("/obras")
+async def obra_create(req: ObraIn, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    data = _validate_obra(req.model_dump())
+    obra = {"id": uid(), **data, "status": "ativa", "created_by": user["id"], "seeded": False, "created_at": now_iso(), "updated_at": now_iso()}
+    db.insert("obras", obra)
+    return obra_summary(obra)
+
+
+@api.get("/obras/{obra_id}")
+async def obra_get(obra_id: str, user: dict = Depends(get_current_user)):
+    return obra_summary(_get_obra(obra_id))
+
+
+@api.put("/obras/{obra_id}")
+async def obra_update(obra_id: str, req: ObraUpdate, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    current = _get_obra(obra_id)
+    changes = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not changes:
+        return obra_summary(current)
+    merged = _validate_obra({**{k: current.get(k) for k in ("start_date", "end_date")}, **changes})
+    changes = {k: merged[k] for k in changes}
+    changes["updated_at"] = now_iso()
+    db.update("obras", obra_id, changes)
+    return obra_summary(_get_obra(obra_id))
+
+
+@api.get("/obras/{obra_id}/workers")
+async def workers_list(obra_id: str, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    return {"items": db.find("workers", "obra_id = ?", [obra_id], order="name ASC", limit=5000)}
+
+
+def _sync_workers_count(obra_id: str) -> int:
+    n = db.count("workers", "obra_id = ?", [obra_id])
+    db.update("obras", obra_id, {"workers_count": n, "updated_at": now_iso()})
+    return n
+
+
+@api.post("/obras/{obra_id}/workers")
+async def worker_add(obra_id: str, req: WorkerIn, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    w = {"id": uid(), "obra_id": obra_id, **req.model_dump(), "created_at": now_iso()}
+    db.insert("workers", w)
+    _sync_workers_count(obra_id)
+    return w
+
+
+@api.post("/obras/{obra_id}/workers/import")
+async def workers_import(obra_id: str, file: UploadFile = File(...), replace: bool = Query(False),
+                         user: dict = Depends(get_current_user)):
+    require_manager(user)
+    _get_obra(obra_id)
+    content = await file.read()
+    try:
+        records, errors = integrations.parse_workers_sheet(content)
+    except Exception as exc:
+        raise HTTPException(400, f"Não foi possível ler a planilha: {exc}")
+    if replace:
+        with db._lock, db.connect() as conn:
+            conn.execute("DELETE FROM workers WHERE obra_id = ?", [obra_id])
+    for r in records:
+        db.insert("workers", {"id": uid(), "obra_id": obra_id, "created_at": now_iso(), **r})
+    total = _sync_workers_count(obra_id)
+    return {"imported": len(records), "total": total, "errors": errors}
 
 
 # ---------------------- INTEGRAÇÕES ----------------------
@@ -676,6 +887,12 @@ async def excel_export(user: dict = Depends(get_current_user)):
     content = integrations.build_workbook(rows, obra.get("name", ""))
     fname = f"obra-{today()}.xlsx"
     return Response(content, media_type=XLSX, headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@api.get("/integrations/excel/workers-template")
+async def excel_workers_template(user: dict = Depends(get_current_user)):
+    return Response(integrations.workers_template(), media_type=XLSX,
+                    headers={"Content-Disposition": 'attachment; filename="modelo-funcionarios.xlsx"'})
 
 
 @api.get("/integrations/excel/epi-template")
@@ -736,13 +953,20 @@ app.add_middleware(
 
 
 # ====================== SEED (dados de demonstração) ======================
+DEMO_OBRA_DETAILS = {"company": "Construtora ABC Ltda.", "art": "SP-2025-0012345", "size": "medio", "workers_count": 4,
+                     "status": "ativa"}
+
+
 def seed_demo() -> None:
-    if db.find_one("obras", "seeded = 1"):
+    existing = db.find_one("obras", "seeded = 1")
+    if existing:
+        if not existing.get("company"):  # banco da versão anterior: completa os novos campos
+            db.update("obras", existing["id"], DEMO_OBRA_DETAILS)
         return
     obra_id = uid()
     db.insert("obras", {"id": obra_id, "name": "Residencial Vila Nova", "address": "Av. Paulista, 1500 - São Paulo/SP",
                         "progress": 62, "start_date": "2025-08-01", "end_date": "2026-12-15", "seeded": True,
-                        "created_at": now_iso()})
+                        "created_at": now_iso(), **DEMO_OBRA_DETAILS})
     demo_pw = os.environ.get("DEMO_PASSWORD", "demo123")
     for name, email, role in [
         ("Administrador", "admin@demo.com", "admin"),

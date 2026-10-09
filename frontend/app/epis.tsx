@@ -5,9 +5,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { api, getStoredUser } from "@/src/api";
 import SignatureCanvas from "@/src/components/SignatureCanvas";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 export default function EPIsScreen() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,7 +116,7 @@ export default function EPIsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   back: { width: 40, height: 40, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
@@ -127,7 +130,7 @@ const styles = StyleSheet.create({
   primaryBtn: { marginTop: spacing.md, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.md, alignItems: "center", minHeight: 52 },
   primaryBtnText: { color: colors.onBrand, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1 },
   card: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surface, gap: 4 },
-  cardAlert: { backgroundColor: "#FFF4EF", borderColor: colors.error },
+  cardAlert: { backgroundColor: colors.surfaceTertiary, borderColor: colors.error },
   cardRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   cardTitle: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, color: colors.onSurface },
   meta: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info },
@@ -147,4 +150,4 @@ const styles = StyleSheet.create({
   sigRow: { marginTop: spacing.sm, borderTopWidth: 2, borderTopColor: colors.borderStrong, paddingTop: spacing.sm },
   sigLabel: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, fontWeight: "700", letterSpacing: 1, marginBottom: 4 },
   sigThumb: { width: "100%", height: 60, backgroundColor: colors.surface },
-});
+}));

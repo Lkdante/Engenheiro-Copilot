@@ -1,15 +1,19 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { api, saveAuth } from "@/src/api";
-import { colors, spacing, fonts, fontSize, roleLabel } from "@/src/theme";
+import { api, saveAuth, setActiveObra } from "@/src/api";
+import { spacing, fonts, fontSize, roleLabel } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 const ROLES = ["engenheiro", "tec_seguranca", "almoxarife", "mestre_obras", "estagiario", "diretor", "admin"];
 
 export default function Register() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
+  const { obraId, obraName } = useLocalSearchParams<{ obraId?: string; obraName?: string }>();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,7 +29,12 @@ export default function Register() {
     try {
       const r = await api<{ token: string; user: any }>("/auth/register", { method: "POST", body: { name: name.trim(), email: email.trim(), password, role }, auth: false });
       await saveAuth(r.token, r.user);
-      router.replace("/(tabs)");
+      if (obraId) {
+        await setActiveObra({ id: obraId, name: obraName || "Obra" });
+        router.replace("/(tabs)/obra");
+      } else {
+        router.replace("/obras");
+      }
     } catch (e: any) {
       setErr(e?.message || "Erro ao cadastrar");
     } finally {
@@ -71,7 +80,7 @@ export default function Register() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   scroll: { padding: spacing.lg, paddingBottom: spacing["2xl"] },
   back: { width: 44, height: 44, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", marginBottom: spacing.lg },
@@ -86,4 +95,4 @@ const styles = StyleSheet.create({
   primaryBtn: { marginTop: spacing.xl, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.lg, alignItems: "center", minHeight: 52 },
   primaryBtnText: { color: colors.onBrand, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1 },
   err: { color: colors.error, fontFamily: fonts.mono, fontSize: fontSize.sm, marginTop: spacing.md },
-});
+}));

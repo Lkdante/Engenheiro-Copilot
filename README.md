@@ -76,6 +76,26 @@ npx expo start --web
 - fotos e inspeções são salvas como *pendentes de validação humana*;
 - o RDO pode ser digitado manualmente.
 
+## Fluxo do app: Menu de Obras → Login → Obra
+
+1. **Menu de Obras (público)** — abre sem login. Qualquer pessoa vê as obras em andamento e as especificações:
+   nome, localidade, início, término previsto, estágio (%), empresa responsável, ART, porte e nº de funcionários.
+   Tem **barra de pesquisa** pelo nome da obra e botão de **Configurações** (engrenagem).
+2. **Detalhe da obra** — ao tocar numa obra aparecem as especificações e o botão **FAZER LOGIN PARA ACESSAR**.
+3. **Login** — depois de entrar, o app abre direto a obra escolhida (dashboard, copiloto, RDO, NCs, EPIs, etc.).
+
+- **Cadastrar obra**: botão **+** no menu (aparece para administrador, engenheiro e diretor logados).
+  Funcionários podem vir de uma planilha Excel (*Nome, Função, Empresa, Setor, Admissão*).
+- **Trocar de obra**: botão **TROCAR** no dashboard ou **Perfil → Trocar de obra**.
+
+## Configurações
+
+- **Visibilidade**: tema **Claro**, **Escuro** (tons frios: azul-ardósia e ciano) ou **Sistema**;
+  cartões detalhados/compactos; ordenar por recentes, nome ou término; mostrar obras concluídas.
+- **Acessibilidade**: tamanho do texto (normal, grande, extra) e alto contraste.
+- **Privacidade**: manter conectado neste aparelho, sair da conta, limpar dados do aparelho e
+  resumo do que é público e do que exige login.
+
 ## Integrações
 
 - **Excel**: exporta toda a obra em `.xlsx` (EPIs, NCs, RDOs, checklists, qualidade, inspeções), baixa um modelo

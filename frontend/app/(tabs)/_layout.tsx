@@ -1,8 +1,22 @@
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
+import { useEffect } from "react";
+import { getActiveObra, getStoredUser } from "@/src/api";
 import { Ionicons } from "@expo/vector-icons";
-import { colors, fonts, fontSize } from "@/src/theme";
+import { fonts, fontSize } from "@/src/theme";
+import { useTheme } from "@/src/settings";
 
 export default function TabsLayout() {
+  const { colors, fontSize } = useTheme();
+  const router = useRouter();
+
+  // A área da obra exige login e uma obra escolhida no menu
+  useEffect(() => {
+    (async () => {
+      if (!(await getStoredUser())) return router.replace("/(auth)/login");
+      if (!(await getActiveObra())) router.replace("/obras");
+    })();
+  }, [router]);
+
   return (
     <Tabs
       screenOptions={{

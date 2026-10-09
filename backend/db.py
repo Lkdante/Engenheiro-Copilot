@@ -36,13 +36,32 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS obras (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    address TEXT,
-    progress REAL DEFAULT 0,
-    start_date TEXT,
-    end_date TEXT,
+    address TEXT,               -- localidade
+    progress REAL DEFAULT 0,    -- estágio atual (%)
+    start_date TEXT,            -- início (AAAA-MM-DD)
+    end_date TEXT,              -- término previsto (AAAA-MM-DD)
+    company TEXT,               -- empresa responsável
+    art TEXT,                   -- nº da ART
+    size TEXT,                  -- porte: pequeno | medio | grande
+    workers_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'ativa',
+    created_by TEXT,
     seeded INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS workers (
+    id TEXT PRIMARY KEY,
+    obra_id TEXT NOT NULL REFERENCES obras(id),
+    name TEXT NOT NULL,
+    role TEXT,
+    company TEXT,
+    sector TEXT,
+    admission_date TEXT,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_workers_obra ON workers(obra_id);
 
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -176,10 +195,24 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+# Colunas adicionadas depois da primeira versão (migração de bancos já existentes)
+MIGRATIONS: dict[str, dict[str, str]] = {
+    "obras": {
+        "company": "TEXT", "art": "TEXT", "size": "TEXT", "workers_count": "INTEGER DEFAULT 0",
+        "status": "TEXT DEFAULT 'ativa'", "created_by": "TEXT", "updated_at": "TEXT",
+    },
+}
+
+
 def init_db() -> None:
     with _lock, connect() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols.items():
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
 def _encode(table: str, doc: dict) -> dict:

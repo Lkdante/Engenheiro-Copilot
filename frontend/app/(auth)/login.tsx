@@ -1,13 +1,18 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { api, saveAuth, BASE } from "@/src/api";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { api, saveAuth, setActiveObra, BASE } from "@/src/api";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 export default function Login() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
+  // Quando vem da tela de uma obra, entra direto nela depois do login
+  const { obraId, obraName } = useLocalSearchParams<{ obraId?: string; obraName?: string }>();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,7 +27,12 @@ export default function Login() {
       }
       const r = await api<{ token: string; user: any }>('/auth/login', { method: 'POST', body: { email: email.trim(), password }, auth: false });
       await saveAuth(r.token, r.user);
-      router.replace('/(tabs)');
+      if (obraId) {
+        await setActiveObra({ id: obraId, name: obraName || "Obra" });
+        router.replace('/(tabs)/obra');
+      } else {
+        router.replace('/obras');
+      }
     } catch (e: any) {
       setErr(e?.message || 'Erro ao entrar');
     } finally {
@@ -34,6 +44,16 @@ export default function Login() {
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <Pressable testID="login-back" onPress={() => (router.canGoBack() ? router.back() : router.replace('/obras'))} style={styles.backBtn} accessibilityLabel="Voltar ao menu de obras">
+            <Ionicons name="arrow-back" size={20} color={colors.onSurface} />
+            <Text style={styles.backText}>OBRAS</Text>
+          </Pressable>
+          {obraName ? (
+            <View style={styles.obraBanner}>
+              <Ionicons name="business" size={16} color={colors.brand} />
+              <Text style={styles.obraBannerText} numberOfLines={2}>Entre para acessar: {obraName}</Text>
+            </View>
+          ) : null}
           <View style={styles.brandBlock}>
             <View style={styles.logoBox}>
               <Ionicons name="hardware-chip" size={28} color={colors.onBrand} />
@@ -70,7 +90,7 @@ export default function Login() {
             <Pressable testID="login-submit-button" onPress={submit} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}> 
               {loading ? <ActivityIndicator color={colors.onBrand} /> : <Text style={styles.primaryBtnText}>ENTRAR</Text>} 
             </Pressable>
-            <Pressable testID="login-goto-register" onPress={() => router.push('/(auth)/register')} style={styles.secondaryBtn}> 
+            <Pressable testID="login-goto-register" onPress={() => router.push({ pathname: '/(auth)/register', params: obraId ? { obraId, obraName: obraName || '' } : {} })} style={styles.secondaryBtn}> 
               <Text style={styles.secondaryBtnText}>CRIAR CONTA</Text> 
             </Pressable>
 
@@ -88,9 +108,13 @@ export default function Login() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   scroll: { padding: spacing.lg, paddingBottom: spacing['2xl'] },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, alignSelf: 'flex-start', borderWidth: 2, borderColor: colors.borderStrong, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+  backText: { fontFamily: fonts.mono, fontSize: fontSize.xs, fontWeight: '700', color: colors.onSurface, letterSpacing: 1 },
+  obraBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.lg, borderWidth: 2, borderColor: colors.brand, padding: spacing.md, backgroundColor: colors.surfaceSecondary },
+  obraBannerText: { flex: 1, fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurface, fontWeight: '700' },
   brandBlock: { marginTop: spacing.xl, marginBottom: spacing['2xl'] },
   logoBox: {
     width: 56, height: 56, backgroundColor: colors.brand,
@@ -120,4 +144,4 @@ const styles = StyleSheet.create({
   demoBox: { marginTop: spacing.xl, borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surfaceSecondary },
   demoTitle: { fontFamily: fonts.display, fontWeight: '900', fontSize: fontSize.sm, letterSpacing: 1, color: colors.onSurface, marginBottom: spacing.sm },
   demoLine: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurfaceSecondary, marginBottom: 2 },
-});
+}));
