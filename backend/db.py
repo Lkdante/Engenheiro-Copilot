@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL,
     obra_id TEXT REFERENCES obras(id),
+    email_verified_at TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -156,6 +157,26 @@ CREATE TABLE IF NOT EXISTS quality (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('verificacao_email', 'reset_senha')),
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, kind);
+
+CREATE TABLE IF NOT EXISTS login_events (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    ip TEXT,
+    user_agent TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id);
+
 CREATE TABLE IF NOT EXISTS integration_logs (
     id TEXT PRIMARY KEY,
     obra_id TEXT,
@@ -180,6 +201,14 @@ def init_db() -> None:
     with _lock, connect() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "email_verified_at" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
+        conn.execute("UPDATE users SET email_verified_at = created_at")
 
 
 def _encode(table: str, doc: dict) -> dict:
