@@ -26,7 +26,7 @@ def send_email(to: str, subject: str, body: str) -> None:
     SENT.append({"to": to, "subject": subject, "body": body})
     del SENT[:-50]  # guarda só os 50 últimos
 
-    if not smtp_configured():
+    if not smtp_configured() or to.lower().endswith("@demo.com"):
         logger.info("\n===== E-MAIL (modo dev, não enviado) =====\nPara: %s\nAssunto: %s\n\n%s\n==========================================",
                     to, subject, body)
         return
