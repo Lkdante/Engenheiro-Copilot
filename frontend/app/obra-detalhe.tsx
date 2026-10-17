@@ -8,6 +8,8 @@ import { api, getStoredUser, restoreSession, setActiveObra } from "@/src/api";
 import { spacing, fonts } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
 import { formatDateBR, sizeLabel, type PublicObra } from "@/src/obra";
+import KindAlert from "@/src/components/KindAlert";
+import { notify } from "@/src/notify";
 
 const RESTRICTED = [
   { icon: "stats-chart", label: "Dashboard e indicadores" },
@@ -57,6 +59,7 @@ export default function ObraDetalhe() {
       return;
     }
     await setActiveObra(obra);
+    notify({ kind: "info", title: "Obra selecionada", message: obra.name });
     router.replace("/(tabs)/obra");
   };
 
@@ -84,7 +87,24 @@ export default function ObraDetalhe() {
               obra.days_left !== null && (obra.progress ?? 0) < 100 ? <Text style={styles.pSub}>{obra.days_left} dias para o término previsto</Text> : null}
           </View>
 
+          {obra.demo ? (
+            <View style={styles.lockBox}>
+              <View style={styles.lockHead}>
+                <Ionicons name="school" size={18} color={colors.brand} />
+                <Text style={styles.lockTitle}>DEMONSTRAÇÃO — LAUDO REAL</Text>
+              </View>
+              <Text style={styles.lockText}>
+                Simulação do módulo de patologia com os dados do {obra.demo_fonte?.titulo} ({obra.demo_fonte?.instituicao}, {obra.demo_fonte?.data}).
+              </Text>
+              <Pressable testID="ver-laudo-demo" onPress={() => router.push({ pathname: "/patologia", params: { id: obra.id } })} style={[styles.primaryBtn, { minHeight: 48, paddingVertical: spacing.md }]}>
+                <Ionicons name="document-text" size={18} color={colors.onBrand} />
+                <Text style={styles.primaryBtnText}>VER LAUDO DE DEMONSTRAÇÃO</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           <View style={styles.specs}>
+            <KindAlert kind={obra.kind} inline />
             <Spec icon="location" label="LOCALIDADE" value={obra.address} />
             <Spec icon="business" label="EMPRESA RESPONSÁVEL" value={obra.company} />
             <Spec icon="document-text" label="ART" value={obra.art} />

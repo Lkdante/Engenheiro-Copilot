@@ -9,6 +9,8 @@ import { api, clearAuth, getActiveObra, getStoredUser } from "@/src/api";
 import { spacing, fonts, roleLabel } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
 import { formatDateBR, sizeLabel, type PublicObra } from "@/src/obra";
+import KindAlert from "@/src/components/KindAlert";
+import { notify } from "@/src/notify";
 
 
 
@@ -61,6 +63,7 @@ export default function ObrasMenu() {
     await clearAuth();
     setUser(null);
     setActiveId(null);
+    notify({ kind: "info", title: "Você saiu da conta", message: "Entre com outro usuário quando quiser." });
   };
 
   const compact = settings.cardMode === "compacto";
@@ -157,6 +160,7 @@ export default function ObrasMenu() {
             >
               <View style={styles.cardTop}>
                 <View style={{ flex: 1 }}>
+                  {o.demo ? <Text style={styles.demoTag}>DEMONSTRAÇÃO • LAUDO REAL</Text> : null}
                   <Text style={styles.cardName} numberOfLines={2}>{o.name}</Text>
                   <View style={styles.row}>
                     <Ionicons name="location" size={12} color={colors.info} />
@@ -188,6 +192,7 @@ export default function ObrasMenu() {
                   ) : null}
                 </>
               ) : null}
+              <KindAlert kind={o.kind} />
             </Pressable>
           ))}
         </ScrollView>
@@ -230,6 +235,7 @@ const useStyles = makeStyles((colors, fontSize) => ({
   card: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, gap: spacing.sm, backgroundColor: colors.surface },
   cardActive: { borderColor: colors.brand, borderWidth: 3 },
   cardTop: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start" },
+  demoTag: { alignSelf: "flex-start", fontFamily: fonts.mono, fontSize: fontSize.xs - 1, fontWeight: "700", letterSpacing: 1, color: colors.onBrand, backgroundColor: colors.brand, paddingHorizontal: 6, paddingVertical: 1, marginBottom: 4 },
   cardName: { fontFamily: fonts.display, fontSize: fontSize.lg, fontWeight: "900", color: colors.onSurface, letterSpacing: -0.3 },
   row: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   cardMeta: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, flexShrink: 1 },

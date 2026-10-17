@@ -24,11 +24,25 @@
 
 ## Obras (multi-obra)
 - Fluxo: Menu de Obras público (`GET /public/obras?q=`, `GET /public/obras/:id`) → Login → Obra
-- Configurações: tema claro/escuro (frio)/sistema, tamanho de texto, alto contraste, exibição/ordenação, manter conectado
+- Configurações: tema claro/escuro (estilo Obsidian)/sistema, tamanho de texto, alto contraste, exibição/ordenação, manter conectado
 - Seleção da obra; obra ativa enviada no cabeçalho `X-Obra-Id`
 - Campos: nome, localidade, início, término previsto, estágio (%), empresa responsável, ART, porte, nº funcionários
 - Funcionários importados por planilha Excel (tabela `workers`)
 - Endpoints: `GET/POST /obras`, `GET/PUT /obras/:id`, `GET/POST /obras/:id/workers`, `POST /obras/:id/workers/import`, `GET /integrations/excel/workers-template`
+
+## Cadastro com análise (rascunho → arquivos → análise → confirmar)
+- `POST /obras/rascunho {kind: geral|patologia}`, `POST /obras/:id/arquivos?category=` (multipart), `GET/DELETE /obras/:id/arquivos[/:fid]`
+- `POST /obras/:id/analisar` (consolida, preenche campos vazios, importa funcionários da área pessoas, parecer IA ou local)
+- `POST /obras/:id/confirmar` (rascunho → ativa), `DELETE /obras/:id` (cancela rascunho), `GET /analise/modelo/:area`
+- Extratores em `backend/analise.py`: xlsx/csv (openpyxl/csv), PDF (pypdf), DXF (leitor próprio), fotos (visão Claude, GUT)
+- Tabela `obra_files`; `obras.kind` e `obras.analysis`; menu mostra alerta do tipo no canto inferior do cartão
+
+## Agente de IA
+- Chat: Groq (`GROQ_CHAT_MODEL`, padrão openai/gpt-oss-120b) → Claude → local; prompt em `backend/assistente.py`
+- Voz: Groq Whisper large-v3 (`POST /copilot/transcribe`, também no RDO)
+- Patologia por foto: Gemini Flash (`GEMINI_MODEL`) via REST com `box_2d`; validação humana `PUT /obras/:id/arquivos/:fid/validacao`
+- YOLO: `backend/yolo.py`, export `GET /analise/dataset/yolo` (admin), status `GET /analise/dataset/status`, treino `yolo_treinar.py`
+- Demo: obra de patologia do laudo público UFSC CSE Bloco C (2011), `backend/demo_laudo_ufsc.py`, tela `app/patologia.tsx`
 
 ## User Roles
 - `admin`, `engenheiro`, `tec_seguranca`, `almoxarife`, `mestre_obras`, `estagiario`, `diretor`

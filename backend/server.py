@@ -19,7 +19,7 @@ import bcrypt
 import jwt
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -29,6 +29,10 @@ load_dotenv(ROOT_DIR / ".env")
 
 import ai  # noqa: E402  (precisa do .env carregado)
 import db  # noqa: E402
+import analise  # noqa: E402
+import yolo  # noqa: E402
+import demo_laudo_ufsc  # noqa: E402
+import assistente  # noqa: E402
 import integrations  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -310,6 +314,8 @@ def obra_facts(obra_id: Optional[str]) -> dict:
         "rdos": db.find("rdos", "obra_id = ?", [obra_id], limit=5),
         "checklists_open": db.find("checklists", "obra_id = ? AND status != 'concluido'", [obra_id], limit=20),
         "epi_alerts": [e for e in (epi_with_expiry(x) for x in db.find("epis", "obra_id = ?", [obra_id], limit=5000)) if e["alert"]],
+        "quality_recent": db.find("quality", "obra_id = ?", [obra_id], limit=6),
+        "workers_registered": db.count("workers", "obra_id = ?", [obra_id]),
     }
 
 
@@ -338,6 +344,7 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     if SEED_DEMO:
         seed_demo()
+        seed_demo_laudo()
     logger.info("Backend pronto — banco SQLite em %s", db.DB_PATH)
     yield
 
@@ -349,7 +356,8 @@ api = APIRouter(prefix="/api")
 @api.get("/")
 @api.get("/health")
 async def health():
-    return {"status": "ok", "database": "sqlite", "ai": ai.status(), "whatsapp_api": integrations.whatsapp_configured()}
+    return {"status": "ok", "database": "sqlite", "ai": ai.status(), "yolo": yolo.status(),
+            "whatsapp_api": integrations.whatsapp_configured()}
 
 
 # ---------------------- AUTH ----------------------
@@ -391,16 +399,11 @@ async def copilot_chat(req: ChatReq, user: dict = Depends(get_current_user)):
     mode = "ai"
     try:
         history = db.find("chat_messages", "session_id = ? AND user_id = ?", [req.session_id, user["id"]],
-                          order="created_at ASC", limit=40)
-        system = (
-            "Você é o 'Engenheiro de Campo IA', copiloto especializado em Engenharia Civil brasileira, obras, "
-            "segurança do trabalho e almoxarifado. Responda sempre em português do Brasil, de forma técnica, "
-            "objetiva e útil para engenheiros, mestres de obra, técnicos de segurança, almoxarifes e estagiários. "
-            "Cite normas (NBR, NR-6, NR-18, NR-35) quando relevante. Use os dados da obra abaixo quando a pergunta "
-            "se referir a ela e nunca invente dados que não estejam no contexto. Seja conciso; use markdown.\n\n"
-            + copilot_context(facts)
-        )
+                          order="created_at DESC", limit=16)[::-1]  # últimas 16 mensagens (limite do plano gratuito)
+        system = assistente.system_prompt(user, facts)
         msgs = [{"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")]
+        while msgs and msgs[0]["role"] != "user":  # a conversa precisa começar pelo usuário
+            msgs.pop(0)
         reply_text = ai.chat(system, msgs)
     except ai.AIUnavailable as exc:
         logger.info("Copiloto em modo local: %s", exc)
@@ -410,6 +413,32 @@ async def copilot_chat(req: ChatReq, user: dict = Depends(get_current_user)):
            "content": reply_text, "created_at": now_iso()}
     db.insert("chat_messages", msg)
     return {"message": reply_text, "id": msg["id"], "mode": mode}
+
+
+@api.post("/copilot/transcribe")
+async def copilot_transcribe(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Microfone do copiloto: áudio → texto (Groq Whisper large-v3)."""
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Áudio vazio")
+    if len(contents) > MAX_UPLOAD:
+        raise HTTPException(413, "Áudio maior que 25 MB")
+    suffix = Path(file.filename or "audio.m4a").suffix or ".m4a"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+    try:
+        text = ai.transcribe(tmp_path, file.filename or f"audio{suffix}")
+    except ai.AIUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    if not text:
+        raise HTTPException(422, "Não foi possível entender o áudio — fale mais perto do microfone")
+    return {"text": text}
 
 
 @api.get("/copilot/history/{session_id}")
@@ -761,7 +790,7 @@ def _get_obra(obra_id: str) -> dict:
 
 
 # ---- Menu público: qualquer pessoa vê as obras e suas especificações (sem login) ----
-PUBLIC_OBRA_FIELDS = ("id", "name", "address", "start_date", "end_date", "progress", "company", "art", "size",
+PUBLIC_OBRA_FIELDS = ("id", "kind", "name", "address", "start_date", "end_date", "progress", "company", "art", "size",
                       "status", "created_at", "updated_at")
 
 
@@ -771,12 +800,18 @@ def public_obra(o: dict) -> dict:
     out["workers_total"] = s["workers_total"]
     out["days_left"] = s["days_left"]
     out["status"] = out.get("status") or "ativa"
+    out["kind"] = out.get("kind") or "geral"
+    an = o.get("analysis") or {}
+    if an.get("demo"):
+        out["demo"] = True
+        out["demo_fonte"] = (an.get("resultado") or {}).get("fonte")
+        out["demo_analysis"] = an  # laudo de demonstração é público (documento público da UFSC)
     return out
 
 
 @api.get("/public/obras")
 async def public_obras(q: str = Query("", max_length=100), include_finished: bool = Query(True)):
-    where, params = "COALESCE(status,'ativa') != 'arquivada'", []
+    where, params = "COALESCE(status,'ativa') NOT IN ('arquivada','rascunho')", []
     if q.strip():
         where += " AND name LIKE ? COLLATE NOCASE"
         params.append(f"%{q.strip()}%")
@@ -793,7 +828,7 @@ async def public_obra_get(obra_id: str):
 
 @api.get("/obras")
 async def obras_list(user: dict = Depends(get_current_user)):
-    return {"items": [obra_summary(o) for o in db.find("obras", "COALESCE(status,'ativa') != 'arquivada'", order="created_at DESC", limit=200)],
+    return {"items": [obra_summary(o) for o in db.find("obras", "COALESCE(status,'ativa') NOT IN ('arquivada','rascunho')", order="created_at DESC", limit=200)],
             "can_manage": user.get("role") in OBRA_MANAGERS}
 
 
@@ -844,6 +879,338 @@ async def worker_add(obra_id: str, req: WorkerIn, user: dict = Depends(get_curre
     db.insert("workers", w)
     _sync_workers_count(obra_id)
     return w
+
+
+# ---------------------- CADASTRO COM ANÁLISE (rascunho → arquivos/fotos → análise → confirmar) ----------------------
+OBRA_KINDS = ("geral", "patologia")
+UPLOAD_DIR = db.DB_PATH.parent / "uploads"
+MAX_UPLOAD = 25 * 1024 * 1024
+DRAFT_NAME = "Nova obra (rascunho)"
+
+
+class DraftIn(BaseModel):
+    kind: str = Field(description="geral (planilhas/arquivos) ou patologia (fotos do local)")
+    name: Optional[str] = None
+
+
+def _get_draft(obra_id: str) -> dict:
+    o = _get_obra(obra_id)
+    if o.get("status") != "rascunho":
+        raise HTTPException(409, "Esta obra já foi cadastrada — use a edição")
+    return o
+
+
+def _public_file(f: dict) -> dict:
+    return {k: v for k, v in f.items() if k != "path"}
+
+
+@api.get("/analise/areas")
+async def analise_areas():
+    return {"areas": [{"id": k, **v} for k, v in analise.AREAS.items()], "kinds": list(OBRA_KINDS)}
+
+
+@api.get("/analise/modelo/{area}")
+async def analise_template(area: str, user: dict = Depends(get_current_user)):
+    if area not in analise.TEMPLATES:
+        raise HTTPException(404, "Não há modelo para esta área")
+    return Response(analise.template_xlsx(area), media_type=XLSX,
+                    headers={"Content-Disposition": f'attachment; filename="modelo-{area}.xlsx"'})
+
+
+@api.post("/obras/rascunho")
+async def obra_draft_create(req: DraftIn, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    if req.kind not in OBRA_KINDS:
+        raise HTTPException(422, "Tipo inválido — use 'geral' ou 'patologia'")
+    obra = {"id": uid(), "name": (req.name or "").strip() or DRAFT_NAME, "progress": 0, "status": "rascunho",
+            "kind": req.kind, "created_by": user["id"], "seeded": False, "created_at": now_iso(), "updated_at": now_iso()}
+    db.insert("obras", obra)
+    return obra_summary(obra)
+
+
+def _analyze_photo(content: bytes, mime: str) -> dict:
+    """Patologia por foto: Gemini Flash (ou Claude) + detector YOLO local quando houver modelo treinado."""
+    yolo_dets = yolo.detect(content)
+    base = {"type": "foto", "yolo": yolo_dets} if yolo_dets is not None else {"type": "foto"}
+    try:
+        r, provider = ai.pathology_vision_json(analise.PATOLOGIA_SYSTEM, "Analise as manifestações patológicas desta foto.",
+                                               mime or "image/jpeg", content)
+        r["status"] = "analisado"
+        r["provedor"] = provider
+        r.setdefault("manifestacoes", [])
+        for m in r["manifestacoes"]:
+            m["gut"] = analise.gut(m)
+        return {**base, **r}
+    except ai.AIUnavailable as exc:
+        return {**base, "status": "pendente", "manifestacoes": [], "requires_human_validation": True,
+                "summary": f"Foto registrada. Análise automática indisponível: {exc}"}
+    except ValueError:
+        return {**base, "status": "pendente", "manifestacoes": [], "requires_human_validation": True,
+                "summary": "Resposta da IA ilegível — validação humana necessária."}
+
+
+class ValidacaoItem(BaseModel):
+    index: int = Field(ge=0)
+    status: str = Field(description="confirmada | rejeitada")
+    tipo: Optional[str] = Field(default=None, description="classe corrigida pelo técnico (opcional)")
+
+
+class ValidacaoIn(BaseModel):
+    itens: list[ValidacaoItem]
+
+
+@api.put("/obras/{obra_id}/arquivos/{file_id}/validacao")
+async def obra_file_validate(obra_id: str, file_id: str, req: ValidacaoIn, user: dict = Depends(get_current_user)):
+    """Validação humana de cada manifestação de uma foto (alimenta o dataset do YOLO)."""
+    require_manager(user)
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f or f["category"] != analise.PHOTO_CATEGORY:
+        raise HTTPException(404, "Foto não encontrada")
+    ex = f.get("extracted") or {}
+    n = len(ex.get("manifestacoes") or [])
+    val = ex.get("validacao") or {}
+    for it in req.itens:
+        if it.index >= n:
+            raise HTTPException(422, f"Manifestação {it.index} não existe nesta foto")
+        if it.status not in ("confirmada", "rejeitada"):
+            raise HTTPException(422, "status deve ser 'confirmada' ou 'rejeitada'")
+        val[str(it.index)] = {"status": it.status, "tipo": it.tipo, "por": user["name"], "em": now_iso()}
+    ex["validacao"] = val
+    db.update("obra_files", file_id, {"extracted": ex})
+    return _public_file({**f, "extracted": ex})
+
+
+@api.get("/analise/dataset/yolo")
+async def yolo_dataset_export(user: dict = Depends(get_current_user)):
+    """Exporta as fotos com manifestações CONFIRMADAS no formato YOLO (só administrador)."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas o administrador pode exportar o dataset")
+    items = []
+    for f in db.find("obra_files", "category = ?", [analise.PHOTO_CATEGORY], order="created_at ASC", limit=100000):
+        path = UPLOAD_DIR / f["path"]
+        if path.exists() and (f.get("extracted") or {}).get("validacao"):
+            items.append((f"{f['id']}{path.suffix}", path.read_bytes(), f["extracted"]))
+    content, stats = yolo.build_dataset_zip(items)
+    if not stats["imagens"]:
+        raise HTTPException(404, "Ainda não há fotos com manifestações confirmadas para exportar")
+    return Response(content, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="dataset-patologias-{today()}.zip"',
+        "X-Dataset-Imagens": str(stats["imagens"]), "X-Dataset-Rotulos": str(stats["rotulos"])})
+
+
+@api.get("/analise/dataset/status")
+async def yolo_dataset_status(user: dict = Depends(get_current_user)):
+    fotos = db.find("obra_files", "category = ?", [analise.PHOTO_CATEGORY], limit=100000)
+    conf = rej = pend = 0
+    por_classe: dict[str, int] = {}
+    for f in fotos:
+        ex = f.get("extracted") or {}
+        val = ex.get("validacao") or {}
+        for i, m in enumerate(ex.get("manifestacoes") or []):
+            st = (val.get(str(i)) or {}).get("status")
+            if st == "confirmada":
+                conf += 1
+                c = yolo.CLASSES[yolo.class_index((val[str(i)].get("tipo") or m.get("tipo")))]
+                por_classe[c] = por_classe.get(c, 0) + 1
+            elif st == "rejeitada":
+                rej += 1
+            else:
+                pend += 1
+    return {"fotos": len(fotos), "confirmadas": conf, "rejeitadas": rej, "aguardando_validacao": pend,
+            "por_classe": por_classe, "yolo": yolo.status()}
+
+
+@api.post("/obras/{obra_id}/arquivos")
+async def obra_file_upload(obra_id: str, category: str = Query(...), file: UploadFile = File(...),
+                           user: dict = Depends(get_current_user)):
+    require_manager(user)
+    _get_obra(obra_id)
+    if category not in analise.ALL_CATEGORIES:
+        raise HTTPException(422, f"Categoria inválida. Use: {', '.join(sorted(analise.ALL_CATEGORIES))}")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Arquivo vazio")
+    if len(content) > MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo maior que 25 MB")
+    filename = Path(file.filename or "arquivo").name
+    kind = analise.file_kind(filename)
+    if category == analise.PHOTO_CATEGORY and kind != "imagem":
+        raise HTTPException(422, "Envie uma imagem (JPG/PNG) para a análise de patologia")
+    fid = uid()
+    ext = Path(filename).suffix.lower()[:10]
+    rel = f"{obra_id}/{fid}{ext}"
+    dest = UPLOAD_DIR / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    if category == analise.PHOTO_CATEGORY:
+        extracted = _analyze_photo(content, file.content_type or "image/jpeg")
+    else:
+        extracted = analise.analyze_file(content, filename, category)
+    rec = {"id": fid, "obra_id": obra_id, "category": category, "filename": filename, "mime": file.content_type,
+           "size": len(content), "path": rel, "kind": kind, "extracted": extracted, "user_id": user["id"],
+           "created_at": now_iso()}
+    db.insert("obra_files", rec)
+    return _public_file(rec)
+
+
+@api.get("/obras/{obra_id}/arquivos")
+async def obra_files_list(obra_id: str, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    return {"items": [_public_file(f) for f in db.find("obra_files", "obra_id = ?", [obra_id], order="created_at ASC", limit=1000)]}
+
+
+@api.get("/obras/{obra_id}/arquivos/{file_id}/download")
+async def obra_file_download(obra_id: str, file_id: str, user: dict = Depends(get_current_user)):
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f or not (UPLOAD_DIR / f["path"]).exists():
+        raise HTTPException(404, "Arquivo não encontrado")
+    return FileResponse(UPLOAD_DIR / f["path"], filename=f["filename"], media_type=f.get("mime") or "application/octet-stream")
+
+
+@api.delete("/obras/{obra_id}/arquivos/{file_id}")
+async def obra_file_delete(obra_id: str, file_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f:
+        raise HTTPException(404, "Arquivo não encontrado")
+    try:
+        (UPLOAD_DIR / f["path"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    with db._lock, db.connect() as conn:
+        conn.execute("DELETE FROM obra_files WHERE id = ?", [file_id])
+    return {"ok": True}
+
+
+def _import_people_from_files(obra_id: str, files: list[dict]) -> int:
+    """Funcionários das planilhas da área 'pessoas' viram o cadastro de funcionários da obra."""
+    people = []
+    for f in files:
+        if f["category"] != "pessoas" or f.get("kind") != "planilha" or f["filename"].lower().endswith(".csv"):
+            continue
+        try:
+            recs, _ = integrations.parse_workers_sheet((UPLOAD_DIR / f["path"]).read_bytes())
+            people += recs
+        except Exception:
+            continue
+    if not people:
+        return 0
+    with db._lock, db.connect() as conn:
+        conn.execute("DELETE FROM workers WHERE obra_id = ?", [obra_id])
+    for r in people:
+        db.insert("workers", {"id": uid(), "obra_id": obra_id, "created_at": now_iso(), **r})
+    return _sync_workers_count(obra_id)
+
+
+@api.post("/obras/{obra_id}/analisar")
+async def obra_analyze(obra_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    obra = _get_obra(obra_id)
+    files = db.find("obra_files", "obra_id = ?", [obra_id], order="created_at ASC", limit=1000)
+    kind = obra.get("kind") or "geral"
+    if kind == "patologia":
+        photos = [f.get("extracted") or {} for f in files if f["category"] == analise.PHOTO_CATEGORY]
+        if not photos:
+            raise HTTPException(422, "Envie pelo menos uma foto do local para analisar")
+        result = analise.consolidate_patologia(photos)
+        local = analise.local_parecer_patologia(result)
+        suggested: dict = {}
+    else:
+        if not [f for f in files if f["category"] != analise.PHOTO_CATEGORY]:
+            raise HTTPException(422, "Anexe pelo menos uma planilha ou arquivo da obra para analisar")
+        result = analise.consolidate_geral(files)
+        local = analise.local_parecer_geral(result)
+        suggested = dict(result["campos_sugeridos"])
+        imported = _import_people_from_files(obra_id, files)
+        if imported:
+            suggested["workers_count"] = imported
+            result["funcionarios_importados"] = imported
+
+    # Parecer: IA quando configurada, senão o parecer local (baseado só nos dados lidos)
+    parecer, mode = local, "local"
+    try:
+        import json as _json
+        compact = _json.dumps({k: v for k, v in result.items() if k != "manifestacoes"}, ensure_ascii=False)[:12000]
+        parecer = ai.chat(
+            "Você é engenheiro civil sênior. Escreva um parecer técnico curto (máx. 12 linhas, português do Brasil, markdown) "
+            "sobre o cadastro desta obra, usando SOMENTE os dados fornecidos. Aponte riscos, pendências e próximos passos. "
+            "Não invente números.",
+            [{"role": "user", "content": f"Tipo: {kind}\nDados extraídos: {compact}"}], max_tokens=700)
+        mode = "ai"
+    except ai.AIUnavailable:
+        pass
+
+    analysis = {"kind": kind, "resultado": result, "parecer": parecer, "parecer_modo": mode,
+                "arquivos": len(files), "analisado_em": now_iso(), "analisado_por": user["name"]}
+    changes: dict = {"analysis": analysis, "updated_at": now_iso()}
+    # preenche só campos vazios do rascunho com o que foi encontrado nos arquivos
+    if obra.get("status") == "rascunho":
+        for k in ("name", "address", "start_date", "end_date", "progress", "company", "art", "size", "workers_count"):
+            v = suggested.get(k)
+            if v in (None, ""):
+                continue
+            empty = obra.get(k) in (None, "", 0) or (k == "name" and obra.get("name") == DRAFT_NAME)
+            if empty:
+                changes[k] = v
+    db.update("obras", obra_id, changes)
+    return {"analysis": analysis, "sugeridos": suggested, "obra": obra_summary(_get_obra(obra_id))}
+
+
+@api.post("/obras/{obra_id}/confirmar")
+async def obra_confirm(obra_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    o = _get_draft(obra_id)
+    missing = [label for k, label in (("address", "localidade"), ("start_date", "início"), ("end_date", "término previsto"),
+                                      ("company", "empresa responsável"), ("art", "ART"), ("size", "porte"))
+               if not o.get(k)]
+    if not o.get("name") or o["name"] == DRAFT_NAME:
+        missing.insert(0, "nome da obra")
+    if missing:
+        raise HTTPException(422, "Complete antes de cadastrar: " + ", ".join(missing))
+    db.update("obras", obra_id, {"status": "ativa", "updated_at": now_iso()})
+    return obra_summary(_get_obra(obra_id))
+
+
+# Tabelas com dados ligados a uma obra (apagadas junto na exclusão definitiva)
+OBRA_DATA_TABLES = ("obra_files", "workers", "rdos", "photos", "inspections", "checklists",
+                    "nonconformities", "epis", "quality")
+
+
+def _purge_obra(obra_id: str) -> dict:
+    """Apaga a obra, todos os registros ligados a ela e os arquivos enviados. Devolve a contagem apagada."""
+    import shutil
+    counts: dict[str, int] = {}
+    with db._lock, db.connect() as conn:
+        for t in OBRA_DATA_TABLES:
+            counts[t] = conn.execute(f"DELETE FROM {t} WHERE obra_id = ?", [obra_id]).rowcount
+        # usuários que tinham esta obra como padrão ficam sem obra (não são apagados)
+        counts["usuarios_desvinculados"] = conn.execute("UPDATE users SET obra_id = NULL WHERE obra_id = ?", [obra_id]).rowcount
+        conn.execute("DELETE FROM obras WHERE id = ?", [obra_id])
+    shutil.rmtree(UPLOAD_DIR / obra_id, ignore_errors=True)
+    return counts
+
+
+@api.delete("/obras/{obra_id}")
+async def obra_delete(obra_id: str, confirm: str = Query("", description="Nome exato da obra (obrigatório para obras cadastradas)"),
+                      user: dict = Depends(get_current_user)):
+    """• Rascunho: cancela o cadastro (administrador, engenheiro ou diretor).
+    • Obra cadastrada: exclusão DEFINITIVA, só administrador, confirmando com o nome exato da obra."""
+    o = _get_obra(obra_id)
+    if o.get("status") == "rascunho":
+        require_manager(user)
+        _purge_obra(obra_id)
+        return {"ok": True, "rascunho": True}
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas o administrador pode excluir uma obra")
+    if confirm.strip() != (o.get("name") or "").strip():
+        raise HTTPException(422, "Para excluir, digite o nome exato da obra")
+    counts = _purge_obra(obra_id)
+    # registro de auditoria (fica mesmo depois da obra ser apagada)
+    db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": user["id"], "channel": "exclusao_obra",
+                                   "status": "excluida", "created_at": now_iso(),
+                                   "payload": {"obra": o.get("name"), "art": o.get("art"), "por": user.get("email"), "apagados": counts}})
+    logger.warning("Obra '%s' (%s) excluída por %s — %s", o.get("name"), obra_id, user.get("email"), counts)
+    return {"ok": True, "obra": o.get("name"), "apagados": counts}
 
 
 @api.post("/obras/{obra_id}/workers/import")
@@ -963,6 +1330,8 @@ def seed_demo() -> None:
         if not existing.get("company"):  # banco da versão anterior: completa os novos campos
             db.update("obras", existing["id"], DEMO_OBRA_DETAILS)
         return
+    if db.find_one("users", "email = ?", ["admin@demo.com"]):
+        return  # demo já foi criado antes e a obra foi excluída pelo administrador: não recriar
     obra_id = uid()
     db.insert("obras", {"id": obra_id, "name": "Residencial Vila Nova", "address": "Av. Paulista, 1500 - São Paulo/SP",
                         "progress": 62, "start_date": "2025-08-01", "end_date": "2026-12-15", "seeded": True,
@@ -1018,3 +1387,21 @@ def seed_demo() -> None:
                               "service": s, "location": f"Pav {i + 1}", "result": r, "notes": "Registro de demonstração",
                               "created_at": now_iso()})
     logger.info("Dados de demonstração criados (login: engenheiro@demo.com / %s)", demo_pw)
+
+
+def seed_demo_laudo() -> None:
+    """Obra de demonstração de patologia (laudo real da UFSC). Criada uma única vez;
+    se o administrador a excluir, não volta."""
+    if db.find_one("integration_logs", "channel = 'seed' AND status = ?", [demo_laudo_ufsc.DEMO_MARKER]):
+        return
+    obra_id = uid()
+    db.insert("obras", {"id": obra_id, **demo_laudo_ufsc.OBRA, "status": "ativa", "seeded": False,
+                        "created_by": demo_laudo_ufsc.DEMO_MARKER, "analysis": demo_laudo_ufsc.analysis(),
+                        "created_at": now_iso(), "updated_at": now_iso()})
+    for n in demo_laudo_ufsc.ncs():
+        db.insert("nonconformities", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "user_name": "Simulação (laudo UFSC)",
+                                      "status": "aberta", "auto_generated": True, "created_at": now_iso(), **n})
+    db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "channel": "seed",
+                                   "status": demo_laudo_ufsc.DEMO_MARKER, "payload": {"fonte": demo_laudo_ufsc.FONTE["url"]},
+                                   "created_at": now_iso()})
+    logger.info("Obra de demonstração de patologia criada (laudo UFSC CSE Bloco C)")

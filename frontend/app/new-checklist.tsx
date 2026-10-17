@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import { api, getStoredUser } from "@/src/api";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 const OPTIONS = ["alvenaria", "concretagem", "impermeabilizacao", "revestimento_ceramico", "eletrica", "hidraulica", "estrutura"];
 
@@ -22,7 +23,7 @@ export default function NewChecklist() {
       const user = await getStoredUser<any>();
       const r = await api<any>("/checklists/generate", { method: "POST", body: { obra_id: user.obra_id, service_type: svc } });
       router.replace(`/checklist/${r.id}` as any);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setBusy(false); }
   };
 

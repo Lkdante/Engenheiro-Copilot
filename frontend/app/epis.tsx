@@ -7,6 +7,7 @@ import { api, getStoredUser } from "@/src/api";
 import SignatureCanvas from "@/src/components/SignatureCanvas";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function EPIsScreen() {
   const { colors } = useTheme();
@@ -24,8 +25,8 @@ export default function EPIsScreen() {
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    if (!f.worker_name || !f.epi_type) return Alert.alert("Preencha nome e EPI");
-    if (!signatureData) return Alert.alert("Assinatura", "Colete a assinatura do trabalhador antes de salvar");
+    if (!f.worker_name || !f.epi_type) return notifyError("Preencha nome e EPI");
+    if (!signatureData) return notifyError("Assinatura", "Colete a assinatura do trabalhador antes de salvar");
     setSaving(true);
     try {
       const user = await getStoredUser<any>();
@@ -34,7 +35,7 @@ export default function EPIsScreen() {
       setF({ worker_name: "", worker_company: "", worker_role: "", epi_type: "" });
       setSignatureData(null);
       setShowForm(false); load();
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setSaving(false); }
   };
 

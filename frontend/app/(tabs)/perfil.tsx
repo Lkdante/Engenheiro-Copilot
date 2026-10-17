@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { clearAuth, getActiveObra, getStoredUser, type ObraRef } from "@/src/api";
 import { spacing, fonts, fontSize, roleLabel } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notify } from "@/src/notify";
 
 const MENU: { id: string; title: string; sub: string; icon: any; route: string }[] = [
   { id: "obras", title: "TROCAR DE OBRA", sub: "Voltar ao menu de obras", icon: "business", route: "/obras" },
@@ -29,6 +30,7 @@ export default function Perfil() {
 
   const logout = async () => {
     await clearAuth();
+    notify({ kind: "info", title: "Você saiu da conta", message: "Entre com outro usuário quando quiser." });
     router.replace("/obras");
   };
 

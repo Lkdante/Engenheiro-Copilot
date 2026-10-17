@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function ChecklistDetail() {
   const { colors } = useTheme();
@@ -15,7 +16,7 @@ export default function ChecklistDetail() {
   const [c, setC] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => { try { setC(await api(`/checklists/${id}`)); } catch (e: any) { Alert.alert("Erro", String(e?.message)); } setLoading(false); };
+  const load = async () => { try { setC(await api(`/checklists/${id}`)); } catch (e: any) { notifyError("Erro", String(e?.message)); } setLoading(false); };
   useEffect(() => { load(); }, [id]);
 
   const setStatus = async (itemId: string, status: string) => {
@@ -23,7 +24,7 @@ export default function ChecklistDetail() {
       setC((prev: any) => prev ? { ...prev, items: (prev.items || []).map((it: any) => it.id === itemId ? { ...it, status } : it) } : prev);
       const upd = await api(`/checklists/${id}/update-item`, { method: "POST", body: { item_id: itemId, status } });
       setC(upd);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message)); }
   };
 
   if (loading || !c) return <SafeAreaView style={styles.container}><ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /></SafeAreaView>;

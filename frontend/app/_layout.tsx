@@ -7,14 +7,22 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
+import { Toaster } from "@/src/components/Toaster";
+import { ConfirmHost } from "@/src/components/ConfirmHost";
 import { clearAuth, setObraMissingHandler, setUnauthorizedHandler } from "@/src/api";
 import { SettingsProvider, loadSettings, useTheme, type Settings } from "@/src/settings";
-import { lightPalette } from "@/src/theme";
+import { NATIVE_FONT_FILES, lightPalette } from "@/src/theme";
+import { useFonts } from "expo-font";
+import { Platform } from "react-native";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
-  const [loaded, error] = useIconFonts();
+  const [iconsLoaded, iconsError] = useIconFonts();
+  // Fonte de texto: Inter embutida no celular; no navegador usa a Aptos instalada no PC
+  const [textLoaded, textError] = useFonts(Platform.OS === "web" ? {} : NATIVE_FONT_FILES);
+  const loaded = iconsLoaded && textLoaded;
+  const error = iconsError || textError;
   const [settings, setSettings] = useState<Settings | null>(null);
 
   useEffect(() => {
@@ -62,6 +70,8 @@ function AppShell() {
       <SafeAreaProvider>
         <StatusBar style={isDark ? "light" : "dark"} />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }} />
+        <Toaster />
+        <ConfirmHost />
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

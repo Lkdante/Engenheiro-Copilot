@@ -3,7 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { StyleSheet, useColorScheme } from "react-native";
 import { storage } from "@/src/utils/storage";
 import {
-  darkPalette, lightPalette, scaledFontSize, withHighContrast,
+  applyTypography, darkPalette, lightPalette, shapeStyle, scaledFontSize, withHighContrast,
   type FontSizes, type Palette,
 } from "@/src/theme";
 
@@ -100,7 +100,8 @@ export function makeStyles<T extends StyleSheet.NamedStyles<T>>(factory: (colors
     const key = `${isDark}-${settings.highContrast}-${settings.textScale}`;
     const cached = cache.get(key);
     if (cached) return cached;
-    const created = StyleSheet.create(factory(colors, fontSize)) as T;
+    const raw = factory(colors, fontSize);
+    const created = StyleSheet.create(applyTypography(shapeStyle(raw, settings.highContrast, colors))) as T;
     cache.set(key, created);
     return created;
   };

@@ -5,6 +5,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { api, getStoredUser, setActiveObra } from "@/src/api";
 import { formatDateBR, sizeLabel } from "@/src/obra";
+import KindAlert from "@/src/components/KindAlert";
+import DeleteObraZone from "@/src/components/DeleteObraZone";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
 
@@ -43,6 +45,7 @@ export default function Obra() {
   const styles = useStyles();
   const router = useRouter();
   const [canEdit, setCanEdit] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(false);
@@ -52,7 +55,9 @@ export default function Obra() {
       const d = await api<Dash>("/dashboard");
       setData(d);
       if (d?.obra) await setActiveObra(d.obra);
-      setCanEdit(MANAGERS.includes((await getStoredUser<any>())?.role));
+      const role = (await getStoredUser<any>())?.role;
+      setCanEdit(MANAGERS.includes(role));
+      setIsAdmin(role === "admin");
     } catch (e) { console.warn(e); }
     setLoading(false); setRefresh(false);
   }, []);
@@ -90,6 +95,7 @@ export default function Obra() {
 
         {data?.obra ? (
           <View style={styles.details}>
+            <KindAlert kind={data.obra.kind} inline />
             <Detail label="EMPRESA RESPONSÁVEL" value={data.obra.company} />
             <Detail label="ART" value={data.obra.art} />
             <View style={styles.detailRow}>
@@ -101,9 +107,27 @@ export default function Obra() {
               <Detail label="FUNCIONÁRIOS" value={String(data.obra.workers_count ?? 0)} half />
             </View>
             {canEdit ? (
-              <Pressable testID="obra-editar" onPress={() => router.push({ pathname: "/obra-nova", params: { id: data.obra.id } })} style={styles.editBtn}>
+              <Pressable testID="obra-editar" onPress={() => router.push({ pathname: "/obra-editar", params: { id: data.obra.id } })} style={styles.editBtn}>
                 <Ionicons name="create-outline" size={16} color={colors.onSurface} />
                 <Text style={styles.switchText}>EDITAR DADOS DA OBRA</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        {data?.obra?.analysis ? (
+          <View style={styles.details}>
+            <Text style={styles.detailLabel}>ANÁLISE DO CADASTRO • {data.obra.analysis.kind === "patologia" ? "VISTORIA POR FOTOS" : "PLANILHAS E ARQUIVOS"}</Text>
+            <Text style={styles.detailValue}>
+              {data.obra.analysis.kind === "patologia"
+                ? `Estado geral: ${String(data.obra.analysis.resultado?.estado_geral || "pendente").toUpperCase()} • ${data.obra.analysis.resultado?.origem === "laudo" ? `${data.obra.analysis.resultado?.itens_laudo ?? 0} itens do laudo` : `${data.obra.analysis.resultado?.fotos ?? 0} foto(s)`}`
+                : `Completude: ${data.obra.analysis.resultado?.indice_completude ?? 0}% • ${data.obra.analysis.arquivos ?? 0} arquivo(s)`}
+            </Text>
+            {data.obra.analysis.parecer ? <Text style={styles.footerText} numberOfLines={6}>{String(data.obra.analysis.parecer).replace(/\*\*/g, "").replace(/_/g, "")}</Text> : null}
+            {data.obra.analysis.kind === "patologia" ? (
+              <Pressable testID="ver-manifestacoes" onPress={() => router.push({ pathname: "/patologia", params: { id: data.obra.id } })} style={styles.editBtn}>
+                <Ionicons name="list" size={16} color={colors.onSurface} />
+                <Text style={styles.switchText}>VER MANIFESTAÇÕES (GUT)</Text>
               </Pressable>
             ) : null}
           </View>
@@ -124,6 +148,9 @@ export default function Obra() {
           <Text style={styles.footerLabel}>PLATAFORMA</Text>
           <Text style={styles.footerText}>Engenheiro de Campo IA • Copiloto para canteiros brasileiros. Dados em tempo real.</Text>
         </View>
+        {isAdmin && data?.obra ? (
+          <DeleteObraZone obraId={data.obra.id} obraName={data.obra.name} onDeleted={() => router.replace("/obras")} />
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );

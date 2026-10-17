@@ -7,6 +7,7 @@ import * as ImagePicker from "expo-image-picker";
 import { api, getStoredUser } from "@/src/api";
 import { spacing, fonts, fontSize, severityColor } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function InspectScreen() {
   const { colors } = useTheme();
@@ -18,7 +19,7 @@ export default function InspectScreen() {
 
   const pick = async (cam: boolean) => {
     const perm = cam ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert("Permissão negada");
+    if (!perm.granted) return notifyError("Permissão negada");
     const res = cam ? await ImagePicker.launchCameraAsync({ base64: true, quality: 0.6 }) : await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.6 });
     if (res.canceled || !res.assets?.[0]?.base64) return;
     const b64 = `data:image/jpeg;base64,${res.assets[0].base64}`;
@@ -33,7 +34,7 @@ export default function InspectScreen() {
       const user = await getStoredUser<any>();
       const r = await api("/inspections/analyze", { method: "POST", body: { obra_id: user.obra_id, image_base64: b64 } });
       setResult(r);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -111,7 +112,7 @@ const useStyles = makeStyles((colors, fontSize) => ({
   emptyTitle: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.lg, color: colors.onSurface, letterSpacing: -0.3 },
   emptyText: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.info, lineHeight: 20 },
   preview: { width: "100%", height: 280, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceTertiary },
-  busy: { flexDirection: "row", gap: spacing.md, padding: spacing.md, backgroundColor: colors.brandTertiary, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
+  busy: { flexDirection: "row", gap: spacing.md, padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
   busyText: { fontFamily: fonts.mono, fontWeight: "700", letterSpacing: 1 },
   resultBlock: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surface, gap: spacing.sm },
   metaLine: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, fontWeight: "700", letterSpacing: 0.5 },

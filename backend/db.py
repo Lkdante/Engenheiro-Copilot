@@ -25,6 +25,8 @@ JSON_FIELDS: dict[str, set[str]] = {
     "checklists": {"items"},
     "rdos": {"activities"},
     "integration_logs": {"payload"},
+    "obra_files": {"extracted"},
+    "obras": {"analysis"},
 }
 
 BOOL_FIELDS: dict[str, set[str]] = {
@@ -44,12 +46,29 @@ CREATE TABLE IF NOT EXISTS obras (
     art TEXT,                   -- nº da ART
     size TEXT,                  -- porte: pequeno | medio | grande
     workers_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'ativa',
+    status TEXT DEFAULT 'ativa',  -- ativa | rascunho | arquivada
+    kind TEXT DEFAULT 'geral',    -- geral | patologia
+    analysis TEXT,                -- JSON da análise de cadastro
     created_by TEXT,
     seeded INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS obra_files (
+    id TEXT PRIMARY KEY,
+    obra_id TEXT NOT NULL REFERENCES obras(id),
+    category TEXT NOT NULL,     -- foto | pessoas | seguranca | almoxarifado | planejamento | qualidade | documentacao | custos | projeto
+    filename TEXT NOT NULL,
+    mime TEXT,
+    size INTEGER,
+    path TEXT NOT NULL,         -- caminho relativo em data/uploads
+    kind TEXT,                  -- planilha | pdf | dxf | dwg | imagem | outro
+    extracted TEXT,             -- JSON com o que foi lido do arquivo
+    user_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_obra ON obra_files(obra_id);
 
 CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY,
@@ -200,6 +219,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
     "obras": {
         "company": "TEXT", "art": "TEXT", "size": "TEXT", "workers_count": "INTEGER DEFAULT 0",
         "status": "TEXT DEFAULT 'ativa'", "created_by": "TEXT", "updated_at": "TEXT",
+        "kind": "TEXT DEFAULT 'geral'", "analysis": "TEXT",
     },
 }
 

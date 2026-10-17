@@ -42,6 +42,7 @@ export function brToTime(text: string): number {
 
 export type PublicObra = {
   id: string;
+  kind?: "geral" | "patologia";
   name: string;
   address: string;
   start_date: string | null;
@@ -54,4 +55,7 @@ export type PublicObra = {
   workers_total: number;
   days_left: number | null;
   created_at: string;
+  demo?: boolean;
+  demo_fonte?: { titulo: string; instituicao: string; data: string; url: string; observacao?: string };
+  demo_analysis?: any;
 };

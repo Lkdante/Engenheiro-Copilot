@@ -3,14 +3,19 @@ import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndic
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { api, downloadFile } from "@/src/api";
+import { api, downloadFile, getStoredUser } from "@/src/api";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyAuto } from "@/src/notify";
 
 type Status = {
   excel: { available: boolean };
   whatsapp: { api_configured: boolean; default_to: string | null };
-  ai: { llm: { configured: boolean; model: string }; speech_to_text: { configured: boolean } };
+  ai: {
+    llm: { configured: boolean; model: string; provider: string };
+    speech_to_text: { configured: boolean; model: string; provider: string };
+    vision_patologia?: { configured: boolean; model: string; provider: string };
+  };
 };
 
 const PLANNED = [
@@ -21,8 +26,7 @@ const PLANNED = [
 ];
 
 function notify(title: string, msg: string) {
-  if (Platform.OS === "web") window.alert(`${title}\n\n${msg}`);
-  else Alert.alert(title, msg);
+  notifyAuto(title, msg); // notificação com borda laranja (src/components/Toaster.tsx)
 }
 
 export default function Integrations() {
@@ -33,12 +37,16 @@ export default function Integrations() {
   const [busy, setBusy] = useState<string | null>(null);
   const [phone, setPhone] = useState("");
   const [message, setMessage] = useState("");
+  const [dataset, setDataset] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const s = await api<Status>("/integrations/status");
       setStatus(s);
       if (s.whatsapp.default_to) setPhone((p) => p || s.whatsapp.default_to || "");
+      setIsAdmin((await getStoredUser<any>())?.role === "admin");
+      try { setDataset(await api("/analise/dataset/status")); } catch {}
     } catch (e: any) {
       notify("Integrações", e?.message || String(e));
     }
@@ -79,11 +87,11 @@ export default function Integrations() {
     const form = new FormData();
     form.append("file", file, file.name);
     const r = await api<{ imported: number; errors: string[] }>("/integrations/excel/import-epis", { method: "POST", body: form, isForm: true });
-    notify("Importação concluída", `${r.imported} entrega(s) de EPI importada(s).` + (r.errors.length ? `\n\nAvisos:\n${r.errors.join("\n")}` : ""));
+    if (r.errors.length) notify("Importação com avisos", `${r.imported} entrega(s) de EPI importada(s).\n\nAvisos:\n${r.errors.join("\n")}`);
   });
 
   const handleWa = async (r: any) => {
-    if (r.sent) return notify("WhatsApp", "Mensagem enviada pela API do WhatsApp.");
+    if (r.sent) return; // notificação automática "WhatsApp enviado"
     if (r.link) {
       if (r.mode === "error") notify("WhatsApp", `${r.detail}\n\nAbrindo envio manual.`);
       await Linking.openURL(r.link);
@@ -170,10 +178,33 @@ export default function Integrations() {
                 <Badge ok={status.ai.llm.configured} on="ATIVA" off="LOCAL" />
               </View>
               <Text style={styles.desc}>
-                {status.ai.llm.configured ? "Claude configurado no backend." : "Sem ANTHROPIC_API_KEY: o chatbot responde com os dados da obra e as fotos ficam pendentes de validação humana."}
-                {"\n"}Transcrição de voz (Whisper): {status.ai.speech_to_text.configured ? "ativa" : "não configurada (OPENAI_API_KEY)"}.
+                • Chat / copiloto: {status.ai.llm.configured ? `${status.ai.llm.provider.toUpperCase()} (${status.ai.llm.model})` : "modo local — configure GROQ_API_KEY (grátis)"}
+                {"\n"}• Voz (Whisper): {status.ai.speech_to_text.configured ? `${status.ai.speech_to_text.provider.toUpperCase()} (${status.ai.speech_to_text.model})` : "não configurada — GROQ_API_KEY"}
+                {"\n"}• Patologias por foto: {status.ai.vision_patologia?.configured ? `${status.ai.vision_patologia.provider.toUpperCase()} (${status.ai.vision_patologia.model})` : "pendente de validação humana — configure GEMINI_API_KEY (grátis)"}
               </Text>
             </View>
+
+            {/* DATASET YOLO */}
+            {dataset ? (
+              <View style={styles.card}>
+                <View style={styles.cardHead}>
+                  <View style={styles.iconBox}><Ionicons name="scan" size={22} color={colors.onSurface} /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name}>DETECTOR YOLO DE PATOLOGIAS</Text>
+                    <Text style={styles.desc}>{dataset.yolo?.available ? "Modelo treinado em uso" : "Coletando fotos validadas para o treinamento"}</Text>
+                  </View>
+                  <Badge ok={!!dataset.yolo?.available} on="ATIVO" off="COLETA" />
+                </View>
+                <Text style={styles.desc}>
+                  {dataset.fotos} foto(s) • {dataset.confirmadas} manifestação(ões) confirmada(s) • {dataset.rejeitadas} rejeitada(s) • {dataset.aguardando_validacao} aguardando validação
+                  {Object.keys(dataset.por_classe || {}).length ? "\n" + Object.entries(dataset.por_classe).map(([k, v]) => `${k}: ${v}`).join(" • ") : ""}
+                </Text>
+                {isAdmin ? <Btn k="dataset" icon="archive" label="EXPORTAR DATASET (YOLO)" onPress={() => run("dataset", async () => {
+                  const uri = await downloadFile("/analise/dataset/yolo", `dataset-patologias-${new Date().toISOString().slice(0, 10)}.zip`);
+                  if (uri) notify("Dataset exportado", `Arquivo salvo em:\n${uri}`);
+                })} /> : null}
+              </View>
+            ) : null}
 
             <Text style={styles.section}>PRÓXIMAS INTEGRAÇÕES</Text>
             {PLANNED.map((i) => (

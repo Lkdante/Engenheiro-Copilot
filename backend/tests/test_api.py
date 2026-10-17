@@ -21,6 +21,8 @@ def client(tmp_path_factory):
     os.environ["OPENAI_API_KEY"] = ""
     os.environ["WHATSAPP_TOKEN"] = ""
     os.environ["WHATSAPP_PHONE_NUMBER_ID"] = ""
+    os.environ["GEMINI_API_KEY"] = ""
+    os.environ["GROQ_API_KEY"] = ""
     from fastapi.testclient import TestClient
     import server
 
@@ -225,3 +227,183 @@ def test_public_obra_detail_and_private_routes_still_protected(client):
     assert client.get(f"/api/public/obras/{oid}").status_code == 200
     assert client.get("/api/dashboard", headers={"X-Obra-Id": oid}).status_code == 401
     assert client.get(f"/api/obras/{oid}").status_code == 401
+
+
+# ----------------------------------------------- CADASTRO COM ANÁLISE DE ARQUIVOS
+def _xlsx(rows_by_sheet: dict) -> bytes:
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name, rows in rows_by_sheet.items():
+        ws = wb.create_sheet(name)
+        for r in rows:
+            ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+DXF_SAMPLE = "\n".join([
+    "0", "SECTION", "2", "ENTITIES",
+    "0", "LINE", "8", "PAREDES", "10", "0", "20", "0", "11", "10", "21", "0",
+    "0", "LINE", "8", "PAREDES", "10", "10", "20", "0", "11", "10", "21", "10",
+    "0", "TEXT", "8", "TEXTOS", "1", "PAVIMENTO TIPO",
+    "0", "TEXT", "8", "TEXTOS", "1", "AREA CONSTRUIDA 1.250,00 m2",
+    "0", "ENDSEC", "0", "EOF", ""])
+
+
+def _upload(client, h, oid, category, name, content):
+    r = client.post(f"/api/obras/{oid}/arquivos", headers=h, params={"category": category},
+                    files={"file": (name, content, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_cadastro_geral_por_planilhas(client):
+    h = login(client)
+    d = client.post("/api/obras/rascunho", headers=h, json={"kind": "geral"}).json()
+    oid = d["id"]
+    assert d["status"] == "rascunho" and d["kind"] == "geral"
+    # rascunho não aparece no menu público
+    assert all(i["id"] != oid for i in client.get("/api/public/obras").json()["items"])
+
+    ficha = _xlsx({"Ficha": [["Nome da obra", "Torre Horizonte"], ["Endereço", "Av. Brasil, 500 - Curitiba/PR"],
+                             ["Construtora", "Horizonte Engenharia"], ["ART", "PR-2026-445566"],
+                             ["Data de início", "01/02/2026"], ["Término previsto", "30/06/2027"]]})
+    f1 = _upload(client, h, oid, "documentacao", "ficha.xlsx", ficha)
+    assert f1["extracted"]["fields"]["art"] == "PR-2026-445566"
+
+    pessoas = _xlsx({"Funcionários": [["Nome", "Função", "Empresa"], ["Ana", "Pedreira", "A"], ["Bia", "Servente", "A"], ["Caio", "Eletricista", "B"]]})
+    _upload(client, h, oid, "pessoas", "pessoas.xlsx", pessoas)
+    plan = _xlsx({"Cronograma": [["Etapa", "Início", "Término", "% Executado"], ["Fundação", "01/02/2026", "30/04/2026", 100],
+                                 ["Estrutura", "01/05/2026", "30/12/2026", 40]]})
+    _upload(client, h, oid, "planejamento", "cronograma.xlsx", plan)
+    custos = _xlsx({"Orçamento": [["Item", "Valor total"], ["Fundação", 300000], ["Estrutura", 900000], ["TOTAL GERAL", 1200000]]})
+    _upload(client, h, oid, "custos", "orcamento.xlsx", custos)
+    estoque = _xlsx({"Estoque": [["Material", "Quantidade", "Estoque mínimo"], ["Cimento", 10, 50], ["Areia", 30, 10]]})
+    _upload(client, h, oid, "almoxarifado", "estoque.xlsx", estoque)
+    dxf = _upload(client, h, oid, "projeto", "planta.dxf", DXF_SAMPLE.encode())
+    assert dxf["extracted"]["metrics"]["entidades"] == 4 and "PAVIMENTO TIPO" in dxf["extracted"]["pavimentos"]
+    dwg = _upload(client, h, oid, "projeto", "planta.dwg", b"AC1032binario")
+    assert dwg["extracted"]["warnings"]
+
+    r = client.post(f"/api/obras/{oid}/analisar", headers=h)
+    assert r.status_code == 200, r.text
+    a = r.json()
+    res = a["analysis"]["resultado"]
+    assert res["areas"]["pessoas"]["metricas"]["funcionarios"] == 3
+    assert res["areas"]["planejamento"]["metricas"]["avanco_medio"] == 70
+    assert res["areas"]["almoxarifado"]["metricas"]["abaixo_minimo"] == 1
+    assert res["areas"]["custos"]["metricas"]["orcamento_total"] == 1200000
+    assert a["analysis"]["parecer"]
+    o = a["obra"]
+    assert o["name"] == "Torre Horizonte" and o["company"] == "Horizonte Engenharia"
+    assert o["start_date"] == "2026-02-01" and o["end_date"] == "2027-06-30"
+    assert o["progress"] == 70 and o["workers_total"] == 3 and o["size"] == "pequeno"
+
+    c = client.post(f"/api/obras/{oid}/confirmar", headers=h)
+    assert c.status_code == 200, c.text
+    pub = next(i for i in client.get("/api/public/obras").json()["items"] if i["id"] == oid)
+    assert pub["kind"] == "geral" and "analysis" not in pub
+
+
+def test_cadastro_patologia_por_fotos(client):
+    h = login(client)
+    oid = client.post("/api/obras/rascunho", headers=h, json={"kind": "patologia"}).json()["id"]
+    assert client.post(f"/api/obras/{oid}/analisar", headers=h).status_code == 422  # sem fotos
+    png = bytes.fromhex("89504E470D0A1A0A0000000D4948445200000001000000010806000000")
+    foto = _upload(client, h, oid, "foto", "fissura.png", png)
+    assert foto["extracted"]["status"] == "pendente"  # sem chave de IA: não inventa resultado
+    r = client.post(f"/api/obras/{oid}/analisar", headers=h).json()
+    assert r["analysis"]["resultado"]["estado_geral"] == "pendente"
+    # confirmar exige os dados de classificação
+    assert client.post(f"/api/obras/{oid}/confirmar", headers=h).status_code == 422
+    client.put(f"/api/obras/{oid}", headers=h, json={**NOVA_OBRA, "name": "Laudo Ed. Primavera"})
+    assert client.post(f"/api/obras/{oid}/confirmar", headers=h).status_code == 200
+    pub = next(i for i in client.get("/api/public/obras").json()["items"] if i["id"] == oid)
+    assert pub["kind"] == "patologia"
+
+
+def test_rascunho_cancelar_e_validacoes(client):
+    h = login(client)
+    assert client.post("/api/obras/rascunho", headers=h, json={"kind": "xyz"}).status_code == 422
+    assert client.post("/api/obras/rascunho", headers=login(client, "estagiario@demo.com"), json={"kind": "geral"}).status_code == 403
+    oid = client.post("/api/obras/rascunho", headers=h, json={"kind": "geral"}).json()["id"]
+    assert client.post(f"/api/obras/{oid}/arquivos", headers=h, params={"category": "foto"},
+                       files={"file": ("a.xlsx", b"x", "application/octet-stream")}).status_code == 422
+    assert client.delete(f"/api/obras/{oid}", headers=h).status_code == 200
+    assert client.get(f"/api/obras/{oid}", headers=h).status_code == 404
+
+
+def test_modelos_por_area_sao_lidos_pelo_analisador(client):
+    import analise
+    h = login(client)
+    for area in analise.TEMPLATES:
+        r = client.get(f"/api/analise/modelo/{area}", headers=h)
+        assert r.status_code == 200
+        ex = analise.analyze_spreadsheet(r.content, "m.xlsx", area)
+        assert ex["sheets"], area
+    doc = analise.analyze_spreadsheet(client.get("/api/analise/modelo/documentacao", headers=h).content, "m.xlsx", "documentacao")
+    assert doc["fields"]["art"] == "SP-2026-000000" and doc["fields"]["name"] == "Residencial Exemplo"
+
+
+# ------------------------------------------------------ EXCLUSÃO DE OBRA (ADMIN)
+def test_admin_exclui_obra_com_todos_os_dados(client):
+    h_eng = login(client)
+    h_adm = login(client, "admin@demo.com")
+    o = client.post("/api/obras", headers=h_eng, json={**NOVA_OBRA, "name": "Obra Para Excluir"}).json()
+    ho = {**h_eng, "X-Obra-Id": o["id"]}
+    client.post("/api/nc", headers=ho, json={"title": "NC", "severity": "alta"})
+    client.post("/api/rdo", headers=ho, json={"text": "RDO"})
+    client.post(f"/api/obras/{o['id']}/workers", headers=h_eng, json={"name": "Fulano"})
+
+    # engenheiro não pode excluir obra cadastrada
+    assert client.delete(f"/api/obras/{o['id']}", headers=h_eng, params={"confirm": "Obra Para Excluir"}).status_code == 403
+    # admin precisa confirmar com o nome exato
+    assert client.delete(f"/api/obras/{o['id']}", headers=h_adm, params={"confirm": "outro nome"}).status_code == 422
+    r = client.delete(f"/api/obras/{o['id']}", headers=h_adm, params={"confirm": "Obra Para Excluir"})
+    assert r.status_code == 200, r.text
+    ap = r.json()["apagados"]
+    assert ap["nonconformities"] == 1 and ap["rdos"] == 1 and ap["workers"] == 1
+    assert client.get(f"/api/public/obras/{o['id']}").status_code == 404
+    assert all(i["id"] != o["id"] for i in client.get("/api/public/obras").json()["items"])
+
+
+# ------------------------------------------- DEMO DE PATOLOGIA + VALIDAÇÃO (YOLO) + VOZ
+def test_obra_demo_laudo_ufsc_no_menu(client):
+    items = client.get("/api/public/obras").json()["items"]
+    demo = next(i for i in items if i.get("demo"))
+    assert demo["kind"] == "patologia" and "UFSC" in demo["name"]
+    assert demo["demo_fonte"]["url"].startswith("https://dfo.ufsc.br/")
+    an = client.get(f"/api/public/obras/{demo['id']}").json()["demo_analysis"]
+    assert an["resultado"]["estado_geral"] == "ruim" and len(an["resultado"]["manifestacoes"]) >= 10
+    # obras normais não expõem a análise publicamente
+    assert all("demo_analysis" not in i for i in items if not i.get("demo"))
+    h = {**login(client), "X-Obra-Id": demo["id"]}
+    assert client.get("/api/dashboard", headers=h).json()["kpis"]["nc_open"] >= 3
+
+
+def test_validacao_humana_e_status_do_dataset(client):
+    import db
+    h = login(client)
+    oid = client.post("/api/obras/rascunho", headers=h, json={"kind": "patologia"}).json()["id"]
+    png = bytes.fromhex("89504E470D0A1A0A0000000D4948445200000001000000010806000000")
+    f = _upload(client, h, oid, "foto", "f.png", png)
+    # simula uma análise com caixa (como o Gemini devolveria)
+    ex = {**f["extracted"], "status": "analisado", "manifestacoes": [{"tipo": "fissura", "gut": 27, "box_2d": [100, 100, 500, 500]}]}
+    db.update("obra_files", f["id"], {"extracted": ex})
+    r = client.put(f"/api/obras/{oid}/arquivos/{f['id']}/validacao", headers=h, json={"itens": [{"index": 0, "status": "confirmada"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["extracted"]["validacao"]["0"]["status"] == "confirmada"
+    assert client.put(f"/api/obras/{oid}/arquivos/{f['id']}/validacao", headers=h, json={"itens": [{"index": 5, "status": "confirmada"}]}).status_code == 422
+    st = client.get("/api/analise/dataset/status", headers=h).json()
+    assert st["confirmadas"] >= 1 and st["yolo"]["available"] is False
+    assert client.get("/api/analise/dataset/yolo", headers=h).status_code == 403  # só admin
+    z = client.get("/api/analise/dataset/yolo", headers=login(client, "admin@demo.com"))
+    assert z.status_code == 200 and z.content[:2] == b"PK"
+
+
+def test_copiloto_voz_sem_chave_retorna_503(client):
+    h = login(client)
+    r = client.post("/api/copilot/transcribe", headers=h, files={"file": ("v.m4a", b"123", "audio/m4a")})
+    assert r.status_code == 503 and "GROQ_API_KEY" in r.json()["detail"]

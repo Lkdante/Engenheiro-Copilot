@@ -1,4 +1,4 @@
-// Configurações: Visibilidade (tema escuro frio), Acessibilidade e Privacidade.
+// Configurações: Visibilidade (tema escuro estilo Obsidian), Acessibilidade e Privacidade.
 import { useCallback, useState, type ReactNode } from "react";
 import { View, Text, Pressable, ScrollView, Switch, Alert, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -7,13 +7,12 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { clearAuth, getStoredUser } from "@/src/api";
 import { darkPalette, lightPalette, spacing, fonts, type Palette } from "@/src/theme";
 import { makeStyles, useTheme, type CardMode, type SortMode, type ThemeMode } from "@/src/settings";
+import { notify } from "@/src/notify";
+import { confirmDialog } from "@/src/components/ConfirmHost";
 
-function confirm(title: string, msg: string, onOk: () => void) {
-  if (Platform.OS === "web") {
-    if (window.confirm(`${title}\n\n${msg}`)) onOk();
-    return;
-  }
-  Alert.alert(title, msg, [{ text: "Cancelar", style: "cancel" }, { text: "Confirmar", style: "destructive", onPress: onOk }]);
+// Confirmação no visual do app (borda laranja, fundo do tema) — src/components/ConfirmHost.tsx
+async function confirm(title: string, msg: string, onOk: () => void | Promise<void>) {
+  if (await confirmDialog({ title, message: msg, confirmText: "Confirmar", cancelText: "Cancelar", destructive: true })) await onOk();
 }
 
 export default function Configuracoes() {
@@ -35,12 +34,14 @@ export default function Configuracoes() {
       await clearAuth();
       reset();
       setUser(null);
+      notify({ kind: "info", title: "Dados do aparelho limpos", message: "Configurações restauradas e sessão encerrada." });
     });
 
   const logout = () =>
     confirm("Sair da conta", "Você continuará vendo o menu público de obras.", async () => {
       await clearAuth();
       setUser(null);
+      notify({ kind: "info", title: "Você saiu da conta", message: "Entre com outro usuário quando quiser." });
     });
 
   return (
@@ -88,7 +89,7 @@ export default function Configuracoes() {
               );
             })}
           </View>
-          <Text style={styles.hint}>O tema escuro usa tons frios (azul-ardósia e ciano) para reduzir o brilho e o cansaço visual.</Text>
+          <Text style={styles.hint}>O tema escuro segue o estilo do Obsidian: fundo grafite, texto cinza-claro, destaque laranja, bordas finas e cantos arredondados — menos brilho e cansaço visual.</Text>
 
           <Text style={styles.label}>EXIBIÇÃO DAS OBRAS NO MENU</Text>
           <Segmented<CardMode>
@@ -161,7 +162,7 @@ export default function Configuracoes() {
           </Pressable>
         </Section>
 
-        <Pressable onPress={() => confirm("Restaurar padrões", "Volta tema, texto e exibição para o padrão.", reset)} style={styles.resetBtn}>
+        <Pressable onPress={() => confirm("Restaurar padrões", "Volta tema, texto e exibição para o padrão.", () => { reset(); notify({ kind: "info", title: "Configurações restauradas" }); })} style={styles.resetBtn}>
           <Text style={styles.resetText}>Restaurar configurações padrão</Text>
         </Pressable>
       </ScrollView>

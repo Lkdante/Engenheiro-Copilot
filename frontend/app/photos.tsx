@@ -7,6 +7,7 @@ import * as ImagePicker from "expo-image-picker";
 import { api, getStoredUser } from "@/src/api";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function PhotosScreen() {
   const { colors } = useTheme();
@@ -22,7 +23,7 @@ export default function PhotosScreen() {
   const pickAndUpload = async (fromCamera: boolean) => {
     try {
       const perm = fromCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) return Alert.alert("Permissão negada");
+      if (!perm.granted) return notifyError("Permissão negada");
       const res = fromCamera
         ? await ImagePicker.launchCameraAsync({ base64: true, quality: 0.6 })
         : await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.6, mediaTypes: ["images"] });
@@ -31,7 +32,7 @@ export default function PhotosScreen() {
       setBusy(true);
       await api("/photos", { method: "POST", body: { obra_id: user.obra_id, image_base64: `data:image/jpeg;base64,${res.assets[0].base64}` } });
       await load();
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -96,7 +97,7 @@ const useStyles = makeStyles((colors, fontSize) => ({
   actionRow: { flexDirection: "row", gap: spacing.sm, padding: spacing.lg },
   actionBtn: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.md, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.surface },
   actionText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5 },
-  busyBar: { flexDirection: "row", gap: spacing.sm, padding: spacing.sm, backgroundColor: colors.brandTertiary, borderWidth: 2, borderColor: colors.borderStrong, marginHorizontal: spacing.lg, alignItems: "center", justifyContent: "center" },
+  busyBar: { flexDirection: "row", gap: spacing.sm, padding: spacing.sm, backgroundColor: colors.surfaceSecondary, borderWidth: 2, borderColor: colors.borderStrong, marginHorizontal: spacing.lg, alignItems: "center", justifyContent: "center" },
   busyText: { fontFamily: fonts.mono, fontWeight: "700", color: colors.onSurface, fontSize: fontSize.xs, letterSpacing: 1 },
   scroll: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing["2xl"] },
   empty: { fontFamily: fonts.mono, color: colors.info, textAlign: "center", marginTop: spacing.xl },

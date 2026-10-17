@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import { api, getStoredUser } from "@/src/api";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function QualityScreen() {
   const { colors } = useTheme();
@@ -21,14 +22,14 @@ export default function QualityScreen() {
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    if (!f.service || !f.location) return Alert.alert("Preencha serviço e local");
+    if (!f.service || !f.location) return notifyError("Preencha serviço e local");
     setSaving(true);
     try {
       const user = await getStoredUser<any>();
       await api("/quality", { method: "POST", body: { obra_id: user.obra_id, ...f } });
       setF({ type: "FVS", service: "", location: "", result: "aprovado", notes: "" });
       setShowForm(false); load();
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setSaving(false); }
   };
 

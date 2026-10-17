@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { storage } from "@/src/utils/storage";
+import { notify, requestNotice } from "@/src/notify";
 
 /**
  * URL do backend.
@@ -34,6 +35,8 @@ export const BASE = resolveBackendUrl();
 export type ApiOptions = {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: any;
+  /** false = não mostrar a notificação de "alteração salva" para esta chamada. */
+  notify?: boolean;
   auth?: boolean;
   isForm?: boolean;
 };
@@ -125,7 +128,16 @@ async function request(path: string, opts: ApiOptions = {}): Promise<Response> {
 export async function api<T = any>(path: string, opts: ApiOptions = {}): Promise<T> {
   const res = await request(path, opts);
   const text = await res.text();
-  return (text ? JSON.parse(text) : null) as T;
+  const data = (text ? JSON.parse(text) : null) as T;
+  // Toda gravação no banco que deu certo vira uma notificação (borda laranja) — ver src/notify.ts
+  const method = opts.method || "GET";
+  if (method !== "GET" && opts.notify !== false) {
+    try {
+      const msg = requestNotice(method, path, opts.body, data);
+      if (msg) notify({ kind: "success", ...msg });
+    } catch {}
+  }
+  return data;
 }
 
 /** Baixa um arquivo autenticado. Web: dispara download. Nativo: retorna URI local. */
@@ -225,4 +237,27 @@ export async function restoreSession<T = any>(): Promise<T | null> {
     }
     return null;
   }
+}
+
+/** Seletor de arquivo genérico (planilhas, PDF, DXF/DWG, imagens). Devolve FormData pronto para upload. */
+export async function pickAnyFile(field = "file"): Promise<{ form: FormData; name: string; mime: string } | null> {
+  const DocumentPicker = await import("expo-document-picker");
+  const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true, multiple: false });
+  if (res.canceled || !res.assets?.[0]) return null;
+  const a: any = res.assets[0];
+  const name = a.name || "arquivo";
+  const mime = a.mimeType || "application/octet-stream";
+  let form: FormData;
+  if (Platform.OS === "web" && a.file) {
+    form = new FormData();
+    form.append(field, a.file as File, name);
+  } else {
+    form = await fileForm(field, a.uri, name, mime);
+  }
+  return { form, name, mime };
+}
+
+/** Envia um arquivo/foto para a obra (rascunho ou ativa) e devolve o que o servidor leu dele. */
+export async function uploadObraFile<T = any>(obraId: string, category: string, form: FormData): Promise<T> {
+  return api<T>(`/obras/${obraId}/arquivos?category=${encodeURIComponent(category)}`, { method: "POST", body: form, isForm: true });
 }

@@ -64,9 +64,11 @@ npx expo start --web
 | Variável | Para quê | Obrigatória |
 |---|---|---|
 | `JWT_SECRET` | Assinatura dos tokens de login | Sim (troque o padrão) |
-| `ANTHROPIC_API_KEY` | Chatbot com IA, análise de fotos/inspeções, checklists personalizados | Não |
-| `ANTHROPIC_MODEL` | Modelo Claude usado (padrão `claude-sonnet-5-5`) | Não |
-| `OPENAI_API_KEY` | Transcrição de áudio do RDO (Whisper) | Não |
+| `GROQ_API_KEY` | **Grátis** — assistente do copiloto + voz (Whisper large-v3) no chat e no RDO | Não |
+| `GEMINI_API_KEY` | **Grátis** — identificação de patologias por foto (Gemini Flash) | Não |
+| `YOLO_MODEL_PATH` | Detector YOLO treinado (deixe vazio até treinar) | Não |
+| `ANTHROPIC_API_KEY` | Pago, opcional — alternativa no chat e nas demais análises de foto | Não |
+| `OPENAI_API_KEY` | Pago, opcional — alternativa ao Groq na transcrição | Não |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | Envio automático pela WhatsApp Cloud API (Meta) | Não |
 | `WHATSAPP_DEFAULT_TO` | Número padrão para alertas | Não |
 | `SQLITE_PATH` | Local do banco (padrão `backend/data/app.db`) | Não |
@@ -84,17 +86,66 @@ npx expo start --web
 2. **Detalhe da obra** — ao tocar numa obra aparecem as especificações e o botão **FAZER LOGIN PARA ACESSAR**.
 3. **Login** — depois de entrar, o app abre direto a obra escolhida (dashboard, copiloto, RDO, NCs, EPIs, etc.).
 
-- **Cadastrar obra**: botão **+** no menu (aparece para administrador, engenheiro e diretor logados).
-  Funcionários podem vir de uma planilha Excel (*Nome, Função, Empresa, Setor, Admissão*).
+- **Cadastrar obra**: botão **+** no menu (administrador, engenheiro e diretor logados) — veja abaixo.
 - **Trocar de obra**: botão **TROCAR** no dashboard ou **Perfil → Trocar de obra**.
+- **Excluir obra (só administrador)**: no dashboard da obra, **Zona do administrador → Excluir obra**. É preciso digitar o
+  nome exato da obra. Apaga a obra e tudo ligado a ela (RDOs, NCs, checklists, EPIs, qualidade, fotos, inspeções,
+  funcionários e arquivos enviados). A exclusão fica registrada para auditoria e não pode ser desfeita.
+
+## Cadastro de obra com análise
+
+Menu → **+** → escolha o tipo → envie fotos ou arquivos → **Analisar obra** → revise os dados → a obra entra no menu.
+
+| Tipo | O que enviar | O que o app faz |
+|---|---|---|
+| **Patologia das construções** | Fotos do local (câmera ou galeria) | Cada foto é analisada (fissuras, umidade, eflorescência, corrosão, desplacamento…) com matriz **GUT**, causa provável e recomendação. Depois você classifica a obra (localidade, início, término, estágio, empresa, ART, porte, funcionários). |
+| **Obra geral** | Planilhas por área: pessoas e acesso, segurança/EPI/EPC, almoxarifado, planejamento e produção, qualidade, documentação, custos e contratos + projeto (AutoCAD **DXF/DWG**, **PDF**, orçamento) | Lê os arquivos, calcula indicadores por área (funcionários, EPIs vencidos, materiais abaixo do mínimo, avanço médio, etapas atrasadas, inspeções reprovadas, orçamento total…), **preenche sozinho** nome, localidade, datas, ART, empresa, estágio, porte e funcionários, e gera um parecer. |
+
+- Formatos lidos: `.xlsx`, `.csv`, `.pdf` (texto), `.dxf` (camadas, entidades, textos, pavimentos). `.dwg` e `.xls` são guardados, com aviso para exportar em DXF/XLSX.
+- Cada área tem um **modelo de planilha** para baixar no próprio assistente.
+- Sem `ANTHROPIC_API_KEY`: as planilhas e o projeto são analisados normalmente (o parecer é automático, sem IA);
+  as fotos de patologia ficam **pendentes de validação humana** — o app não inventa resultado.
+- No menu, cada obra mostra no canto inferior do cartão o alerta **OBRA GERAL** ou **PATOLOGIA DAS CONSTRUÇÕES**.
+- Arquivos ficam em `backend/data/uploads/<obra>/`.
+
+## Agente de IA
+
+| Função | Provedor | Observação |
+|---|---|---|
+| **Copiloto (chat)** | Groq — `openai/gpt-oss-120b` | Assistente especializado em fiscalização e gestão de obras: conhece NRs/NBRs, o mapa do app, o cargo do usuário e os dados reais da obra ativa (NCs, EPIs, RDOs, FVS/FVM, análise de patologia). Não inventa dados. |
+| **Voz no copiloto e no RDO** | Groq — Whisper large-v3 | Botão de microfone no chat: fala → texto → resposta. Vocabulário de obra no reconhecimento. |
+| **Patologias por foto** | Gemini Flash | Manifestações, GUT, causa, recomendação e **caixa (box_2d)** de cada manifestação. |
+| **Detector YOLO** | Local (Ultralytics) | Em coleta: o técnico **✓ confirma / ✗ rejeita** cada manifestação; o admin exporta o dataset em **Perfil → Integrações**. Treino: `python yolo_treinar.py dataset.zip` (ver `requirements-yolo.txt`). |
+
+Ordem de uso: Groq → Claude → modo local (chat); Gemini → Claude → pendente (patologia). Sem chaves, nada é inventado.
+
+### Demonstração de patologia (laudo real)
+
+O menu traz a obra **DEMO • CSE Bloco C — UFSC**, montada com o *Relatório de Vistoria de Patologias Prediais* do
+Centro Socioeconômico (Bloco C) da UFSC, out/2011 — [PDF público](https://dfo.ufsc.br/files/2011/12/RELATORIO_CSE_C_V07.pdf).
+Manifestações, locais, quantidades, causas e soluções são do relatório; as **notas GUT foram atribuídas pela simulação**
+(o relatório não classifica prioridade). Abra pelo menu → obra → **Ver laudo de demonstração** (sem login).
 
 ## Configurações
 
-- **Visibilidade**: tema **Claro**, **Escuro** (tons frios: azul-ardósia e ciano) ou **Sistema**;
+- **Visibilidade**: tema **Claro**, **Escuro** (estilo Obsidian: grafite, laranja escuro, bordas finas e cantos arredondados) ou **Sistema**;
+  nos dois temas os containers seguem o estilo do Obsidian (bordas finas e cantos arredondados);
   cartões detalhados/compactos; ordenar por recentes, nome ou término; mostrar obras concluídas.
+- **Fonte**: todo o texto usa **Aptos**. No navegador do PC o app usa a Aptos instalada (Windows/Office);
+  no celular usa a **Inter** embutida (licença OFL), a alternativa livre mais parecida — a licença da Aptos não permite
+  embutir o arquivo da fonte no app.
 - **Acessibilidade**: tamanho do texto (normal, grande, extra) e alto contraste.
 - **Privacidade**: manter conectado neste aparelho, sair da conta, limpar dados do aparelho e
   resumo do que é público e do que exige login.
+
+## Notificações
+
+Toda ação que grava no banco (login, cadastrar/editar/excluir obra, RDO, foto, inspeção, checklist, NC, EPI, FVS/FVM,
+importações, WhatsApp) mostra uma notificação com **borda laranja** e fundo na cor do tema em uso. No celular ela aparece
+no topo, na largura da tela; em telas largas (tablet/navegador), no canto superior direito. Some sozinha em ~3 s ou ao tocar.
+Sair da conta e trocar de obra também avisam.
+Erros e avisos (falha de conexão, campo obrigatório, permissão negada) usam a mesma notificação, com ícone vermelho
+e um pouco mais de tempo na tela. Só as confirmações ("Excluir?", "Sair?") continuam como janela com botões. As mensagens ficam em `frontend/src/notify.ts`.
 
 ## Integrações
 
