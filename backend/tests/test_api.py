@@ -64,11 +64,19 @@ def test_protected_routes_need_token(client):
 
 
 def test_register_then_login(client):
+    import re
+    import emailer
     r = client.post("/api/auth/register", json={"name": "Novo Usuário", "email": "novo@obra.com", "password": "segredo1", "role": "almoxarife"})
     assert r.status_code == 200, r.text
-    assert r.json()["user"]["obra_id"]
+    assert r.json()["pending"] is True and "token" not in r.json()
+    # antes de confirmar o e-mail a conta não existe
+    assert client.post("/api/auth/login", json={"email": "novo@obra.com", "password": "segredo1"}).status_code == 401
+    corpo = [m for m in emailer.SENT if m["to"] == "novo@obra.com"][-1]["body"]
+    token = re.search(r"token=([\w-]+)", corpo).group(1)
+    assert "Conta criada" in client.get(f"/api/auth/verify-email?token={token}").text
     assert client.post("/api/auth/register", json={"name": "Dup", "email": "novo@obra.com", "password": "segredo1"}).status_code == 400
-    login(client, "novo@obra.com", "segredo1")
+    h = login(client, "novo@obra.com", "segredo1")
+    assert client.get("/api/auth/me", headers=h).json()["obra_id"]
 
 
 def test_dashboard_and_alerts(client):
