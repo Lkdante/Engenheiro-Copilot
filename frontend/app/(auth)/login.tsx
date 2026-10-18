@@ -70,6 +70,13 @@ export default function Login() {
             <Pressable testID="login-submit-button" onPress={submit} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}> 
               {loading ? <ActivityIndicator color={colors.onBrand} /> : <Text style={styles.primaryBtnText}>ENTRAR</Text>} 
             </Pressable>
+            <Pressable
+              testID="login-forgot"
+              onPress={() => router.push({ pathname: "/(auth)/forgot-password", params: { email: email.trim() } } as any)}
+              style={styles.linkBtn}
+            >
+              <Text style={styles.linkBtnText}>ESQUECI MINHA SENHA</Text>
+            </Pressable>
             <Pressable testID="login-goto-register" onPress={() => router.push('/(auth)/register')} style={styles.secondaryBtn}> 
               <Text style={styles.secondaryBtnText}>CRIAR CONTA</Text> 
             </Pressable>
@@ -117,6 +124,8 @@ const styles = StyleSheet.create({
   },
   secondaryBtnText: { color: colors.onSurface, fontFamily: fonts.display, fontWeight: '900', fontSize: fontSize.base, letterSpacing: 1 },
   err: { color: colors.error, fontFamily: fonts.mono, fontSize: fontSize.sm, marginTop: spacing.md },
+  linkBtn: { marginTop: spacing.sm, alignItems: 'center', justifyContent: 'center', minHeight: 44 },
+  linkBtnText: { fontFamily: fonts.mono, fontSize: fontSize.sm, fontWeight: '700', color: colors.onSurface, textDecorationLine: 'underline' },
   demoBox: { marginTop: spacing.xl, borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surfaceSecondary },
   demoTitle: { fontFamily: fonts.display, fontWeight: '900', fontSize: fontSize.sm, letterSpacing: 1, color: colors.onSurface, marginBottom: spacing.sm },
   demoLine: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurfaceSecondary, marginBottom: 2 },

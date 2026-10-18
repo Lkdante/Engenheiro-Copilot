@@ -19,7 +19,7 @@ import bcrypt
 import jwt
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -44,7 +44,7 @@ JWT_ALG = "HS256"
 JWT_EXP_HOURS = int(os.environ.get("JWT_EXP_HOURS", 24 * 7))
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 SEED_DEMO = os.environ.get("SEED_DEMO", "true").lower() in ("1", "true", "yes")
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 # ====================== HELPERS ======================
 def uid() -> str:
@@ -119,6 +119,14 @@ class RegisterReq(BaseModel):
 class LoginReq(BaseModel):
     email: EmailStr
     password: str
+
+class DeleteAccountReq(BaseModel):
+    password: str
+
+
+class ClaimReq(BaseModel):
+    claim: str
+
 
 class ForgotPasswordReq(BaseModel):
     email: EmailStr
@@ -309,8 +317,18 @@ async def health():
 
 # ---------------------- AUTH ----------------------
 # ---------------------- E-MAILS DE CONTA ----------------------
-def send_verification_email(user: dict, token: str) -> None:
-    link = f"{PUBLIC_BASE_URL}/api/auth/verify-email?token={token}"
+def link_base(request: Request) -> str:
+    """Começo dos links dos e-mails.
+
+    Se PUBLIC_BASE_URL estiver preenchido no .env, usa ele. Se estiver vazio, usa o
+    endereço que o app usou para chegar no backend: no celular é o IP do PC
+    (ex.: http://192.168.0.10:8000), então o link também abre no celular.
+    """
+    return PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+
+
+def send_verification_email(user: dict, token: str, base: str) -> None:
+    link = f"{base}/api/auth/verify-email?token={token}"
     emailer.send_email(
         user["email"], "Confirme seu e-mail — Engenheiro de Campo IA",
         f"Olá, {user['name']}!\n\nPara confirmar seu e-mail, abra o link abaixo (vale por 24 horas):\n\n{link}\n\n"
@@ -318,8 +336,8 @@ def send_verification_email(user: dict, token: str) -> None:
     )
 
 
-def send_reset_email(user: dict, token: str) -> None:
-    link = f"{PUBLIC_BASE_URL}/api/auth/reset-password?token={token}"
+def send_reset_email(user: dict, token: str, base: str) -> None:
+    link = f"{base}/api/auth/reset-password?token={token}"
     emailer.send_email(
         user["email"], "Redefinir senha — Engenheiro de Campo IA",
         f"Olá, {user['name']}!\n\nRecebemos um pedido para redefinir sua senha. Abra o link abaixo "
@@ -352,7 +370,7 @@ def record_login(user: dict, request: Request, background: BackgroundTasks) -> N
 # Rotas com "def" (sem async): o FastAPI roda cada uma numa thread separada, então
 # a consulta ao DNS, o bcrypt e o SQLite não travam as outras requisições.
 @api.post("/auth/register")
-def register(req: RegisterReq, background: BackgroundTasks):
+def register(req: RegisterReq, request: Request, background: BackgroundTasks):
     if req.role not in ROLES:
         raise HTTPException(400, f"Cargo inválido. Use: {', '.join(ROLES)}")
     email = req.email.lower()
@@ -360,24 +378,34 @@ def register(req: RegisterReq, background: BackgroundTasks):
         raise HTTPException(400, "E-mail já cadastrado")
     if not emailer.email_domain_exists(email):
         raise HTTPException(400, f"O domínio \"{email.split('@')[1]}\" não recebe e-mails. Confira se digitou certo.")
-    obra = db.find("obras", order="created_at ASC", limit=1)
-    user = {
-        "id": uid(), "name": req.name.strip(), "email": email, "password_hash": hash_pw(req.password),
-        "role": req.role, "obra_id": obra[0]["id"] if obra else None, "email_verified_at": None,
-        "created_at": now_iso(),
-    }
-    db.insert("users", user)
-    token = auth_tokens.create(user["id"], "verificacao_email")
+    # A conta NÃO é criada aqui: só guardamos o pedido. Ela nasce quando a pessoa
+    # abre o link do e-mail (rota /auth/verify-email).
+    name = req.name.strip()
+    token, claim = auth_tokens.create_pending(name, email, hash_pw(req.password), req.role)
     # BackgroundTasks: o e-mail é enviado DEPOIS da resposta, o app não fica esperando o SMTP
-    background.add_task(send_verification_email, user, token)
-    return {"token": make_token(user["id"]), "user": public_user(user)}
+    background.add_task(send_verification_email, {"name": name, "email": email}, token, link_base(request))
+    return {
+        "pending": True,
+        "email": email,
+        "claim": claim,  # código de espera: o app usa em /auth/register/status para entrar sozinho
+        "message": f"Enviamos um link de confirmação para {email}. Sua conta só é criada depois que você "
+                   "abrir esse link (vale por 24 horas). Confira também a caixa de spam.",
+    }
 
 
 @api.post("/auth/login")
 def login(req: LoginReq, request: Request, background: BackgroundTasks):
     u = db.find_one("users", "email = ?", [req.email.lower()])
     if not u or not verify_pw(req.password, u["password_hash"]):
-        raise HTTPException(401, "E-mail ou senha incorretos")
+        # Mesma mensagem em todos os casos: não revela se o e-mail tem conta ou cadastro pendente
+        raise HTTPException(401, "E-mail ou senha incorretos.")
+    if not u.get("email_verified_at"):
+        # Conta criada antes da confirmação obrigatória: manda um link novo e não deixa entrar.
+        # (JSONResponse com background: com HTTPException a tarefa de envio seria descartada.)
+        auth_tokens.invalidate_all(u["id"], "verificacao_email")
+        background.add_task(send_verification_email, u, auth_tokens.create(u["id"], "verificacao_email"), link_base(request))
+        return JSONResponse(status_code=403, background=background, content={
+            "detail": f"Confirme seu e-mail antes de entrar. Enviamos um novo link para {u['email']} (veja também o spam)."})
     try:
         record_login(u, request, background)
     except Exception:
@@ -388,20 +416,72 @@ def login(req: LoginReq, request: Request, background: BackgroundTasks):
 
 @api.get("/auth/verify-email", response_class=HTMLResponse)
 def verify_email(token: str = ""):
-    user_id = auth_tokens.consume(token, "verificacao_email") if token else None
-    if not user_id:
-        return html_page("Link inválido", "Este link de confirmação não é válido, já foi usado ou venceu. "
-                         "Peça um novo pelo app.", ok=False)
-    db.update("users", user_id, {"email_verified_at": now_iso()})
-    return html_page("E-mail confirmado!", "Pronto, seu e-mail foi confirmado. Pode voltar para o app.")
+    invalido = html_page("Link inválido", "Este link de confirmação não é válido, já foi usado ou venceu. "
+                         "Faça o cadastro de novo no app para receber um link novo.", ok=False)
+    if not token:
+        return invalido
+
+    # 1) Cadastro novo: é aqui que a conta passa a existir
+    user_id = uid()
+    pend = auth_tokens.confirm_pending(token, user_id)
+    if pend:
+        if db.find_one("users", "email = ?", [pend["email"]]):
+            return html_page("Conta já existe", "Este e-mail já tem uma conta. É só entrar no app.")
+        obra = db.find("obras", order="created_at ASC", limit=1)
+        agora = now_iso()
+        db.insert("users", {
+            "id": user_id, "name": pend["name"], "email": pend["email"], "password_hash": pend["password_hash"],
+            "role": pend["role"], "obra_id": obra[0]["id"] if obra else None,
+            "email_verified_at": agora, "created_at": agora,
+        })
+        return html_page("Conta criada!", "Seu e-mail foi confirmado e sua conta está pronta. "
+                         "Volte para o app para acessar sua conta.")
+
+    # 2) Conta antiga, criada antes da confirmação obrigatória
+    user_id = auth_tokens.consume(token, "verificacao_email")
+    if user_id:
+        db.update("users", user_id, {"email_verified_at": now_iso()})
+        return html_page("E-mail confirmado!", "Pronto, seu e-mail foi confirmado. Volte para o app e entre.")
+    return invalido
+
+
+@api.post("/auth/register/status")
+def register_status(req: ClaimReq):
+    """O app chama a cada poucos segundos depois do cadastro. Quando a pessoa abre o
+    link do e-mail, responde com o login pronto, e o app entra sozinho."""
+    status, user_id = auth_tokens.claim_pending(req.claim)
+    if status == "invalido":
+        raise HTTPException(404, "Cadastro não encontrado ou vencido. Faça o cadastro de novo.")
+    if status == "aguardando":
+        return {"confirmed": False}
+    u = db.find_one("users", "id = ?", [user_id])
+    return {"confirmed": True, "token": make_token(user_id), "user": public_user(u)}
+
+
+@api.post("/auth/delete-account")
+def delete_account(req: DeleteAccountReq, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Exclui a conta de quem está logado. Pede a senha de novo, para ninguém apagar a
+    conta de outra pessoa só porque pegou o celular dela desbloqueado."""
+    if user["email"].endswith("@demo.com"):
+        raise HTTPException(400, "Contas de demonstração não podem ser excluídas.")
+    u = db.find_one("users", "id = ?", [user["id"]])
+    # 400 e não 401: no app, 401 significa "sessão expirada" e desloga a pessoa
+    if not u or not verify_pw(req.password, u["password_hash"]):
+        raise HTTPException(400, "Senha incorreta.")
+    db.delete_account(u["id"], u["email"])
+    background.add_task(emailer.send_email, u["email"], "Sua conta foi excluída — Engenheiro de Campo IA",
+                        f"Olá, {u['name']}!\n\nSua conta e seus dados pessoais foram excluídos, como você pediu. "
+                        "Os registros da obra que você criou continuam lá, sem o seu nome.\n\n"
+                        "Se não foi você, entre em contato com o administrador da obra.")
+    return {"ok": True, "message": "Sua conta foi excluída."}
 
 
 @api.post("/auth/resend-verification")
-def resend_verification(background: BackgroundTasks, user: dict = Depends(get_current_user)):
+def resend_verification(request: Request, background: BackgroundTasks, user: dict = Depends(get_current_user)):
     if user.get("email_verified"):
         return {"ok": True, "message": "Seu e-mail já está confirmado."}
     auth_tokens.invalidate_all(user["id"], "verificacao_email")  # só o link mais novo vale
-    background.add_task(send_verification_email, user, auth_tokens.create(user["id"], "verificacao_email"))
+    background.add_task(send_verification_email, user, auth_tokens.create(user["id"], "verificacao_email"), link_base(request))
     return {"ok": True, "message": "Enviamos um novo link de confirmação."}
 
 
@@ -409,11 +489,11 @@ FORGOT_MSG = "Se este e-mail estiver cadastrado, você vai receber um link para 
 
 
 @api.post("/auth/forgot-password")
-def forgot_password(req: ForgotPasswordReq, background: BackgroundTasks):
+def forgot_password(req: ForgotPasswordReq, request: Request, background: BackgroundTasks):
     u = db.find_one("users", "email = ?", [req.email.lower()])
     if u:
         auth_tokens.invalidate_all(u["id"], "reset_senha")
-        background.add_task(send_reset_email, u, auth_tokens.create(u["id"], "reset_senha"))
+        background.add_task(send_reset_email, u, auth_tokens.create(u["id"], "reset_senha"), link_base(request))
     # Mesma resposta exista ou não o e-mail: assim ninguém usa esta rota
     # para descobrir quem tem conta no sistema.
     return {"ok": True, "message": FORGOT_MSG}
@@ -432,6 +512,9 @@ def reset_password(req: ResetPasswordReq, background: BackgroundTasks):
     db.update("users", user_id, {"password_hash": hash_pw(req.password)})
     auth_tokens.invalidate_all(user_id, "reset_senha")
     u = db.find_one("users", "id = ?", [user_id])
+    if not u.get("email_verified_at"):
+        # abrir o link do e-mail também prova que o e-mail é dela
+        db.update("users", user_id, {"email_verified_at": now_iso()})
     background.add_task(emailer.send_email, u["email"], "Sua senha foi alterada — Engenheiro de Campo IA",
                         f"Olá, {u['name']}!\n\nA senha da sua conta acabou de ser alterada. "
                         "Se não foi você, entre em contato com o administrador da obra.")
