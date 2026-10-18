@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable } from "react-native";
+import { View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable, Platform, useWindowDimensions } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,6 +7,8 @@ import { api, getStoredUser, setActiveObra } from "@/src/api";
 import { formatDateBR, sizeLabel } from "@/src/obra";
 import KindAlert from "@/src/components/KindAlert";
 import DeleteObraZone from "@/src/components/DeleteObraZone";
+import { AvancoAnimado, VARIANTES } from "@/src/components/AvancoAnimado";
+import { bannerIndex } from "@/src/banners";
 import { spacing, fonts, fontSize } from "@/src/theme";
 import { makeStyles, useTheme } from "@/src/settings";
 
@@ -63,11 +65,15 @@ export default function Obra() {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const { width } = useWindowDimensions(); // fica antes do "return" de carregamento (regra dos hooks)
 
   if (loading) return <SafeAreaView style={styles.container}><ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /></SafeAreaView>;
 
   const k = data?.kpis;
   const progress = k?.progress ?? 0;
+  // animação do card: estrutura sorteada por obra (mesmo sorteio do banner) e maior em telas de notebook
+  const animSize = Platform.OS === "web" && width >= 900 ? 230 : 140;
+  const variante = data?.obra?.id ? (bannerIndex(data.obra) - 1) % VARIANTES : 0;
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -86,8 +92,16 @@ export default function Obra() {
       <ScrollView contentContainerStyle={styles.scroll} refreshControl={<RefreshControl refreshing={refresh} onRefresh={() => { setRefresh(true); load(); }} tintColor={colors.brand} />}>
         {/* Progress big block */}
         <View style={styles.progressBlock}>
-          <Text style={styles.pLabel}>AVANÇO FÍSICO</Text>
-          <Text style={styles.pValue} testID="obra-progress">{progress}%</Text>
+          <View style={styles.pRow}>
+            <View>
+              <Text style={styles.pLabel}>AVANÇO FÍSICO</Text>
+              <Text style={styles.pValue} testID="obra-progress">{progress}%</Text>
+            </View>
+            {/* estrutura que se ergue e cai em loop (5 s), centralizada no espaço livre do card */}
+            <View style={styles.pAnim}>
+              <AvancoAnimado size={animSize} variante={variante} />
+            </View>
+          </View>
           <View style={styles.progressBar}>
             <View style={[styles.progressFill, { width: `${progress}%` }]} />
           </View>
@@ -191,6 +205,8 @@ const useStyles = makeStyles((colors, fontSize) => ({
   hSub: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.info, marginTop: 2 },
   scroll: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing["2xl"] },
   progressBlock: { borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceInverse, padding: spacing.lg },
+  pRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  pAnim: { flex: 1, alignItems: "center", justifyContent: "center" },
   pLabel: { fontFamily: fonts.mono, fontSize: fontSize.xs, letterSpacing: 1.5, color: colors.brandTertiary, fontWeight: "700" },
   pValue: { fontFamily: fonts.display, fontSize: fontSize["4xl"], fontWeight: "900", color: colors.brand, letterSpacing: -2, marginTop: 4 },
   progressBar: { height: 8, backgroundColor: colors.surfaceTertiary, marginTop: spacing.md, borderWidth: 2, borderColor: colors.borderStrong },

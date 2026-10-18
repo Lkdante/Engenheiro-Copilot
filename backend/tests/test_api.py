@@ -372,7 +372,7 @@ def test_admin_exclui_obra_com_todos_os_dados(client):
 # ------------------------------------------- DEMO DE PATOLOGIA + VALIDAÇÃO (YOLO) + VOZ
 def test_obra_demo_laudo_ufsc_no_menu(client):
     items = client.get("/api/public/obras").json()["items"]
-    demo = next(i for i in items if i.get("demo"))
+    demo = next(i for i in items if i.get("demo") and "UFSC" in i["name"])
     assert demo["kind"] == "patologia" and "UFSC" in demo["name"]
     assert demo["demo_fonte"]["url"].startswith("https://dfo.ufsc.br/")
     an = client.get(f"/api/public/obras/{demo['id']}").json()["demo_analysis"]
@@ -407,3 +407,22 @@ def test_copiloto_voz_sem_chave_retorna_503(client):
     h = login(client)
     r = client.post("/api/copilot/transcribe", headers=h, files={"file": ("v.m4a", b"123", "audio/m4a")})
     assert r.status_code == 503 and "GROQ_API_KEY" in r.json()["detail"]
+
+
+def test_obras_reais_de_demonstracao(client):
+    items = client.get("/api/public/obras").json()["items"]
+    reais = {i["name"]: i for i in items if i.get("demo") and "UFSC" not in i["name"]}
+    assert len(reais) == 4
+    kinds = sorted(i["kind"] for i in reais.values())
+    assert kinds == ["geral", "geral", "geral", "patologia"]
+    concluidas = [i for i in reais.values() if i["kind"] == "geral" and i["progress"] >= 100]
+    andamento = [i for i in reais.values() if i["kind"] == "geral" and i["progress"] < 100]
+    assert len(concluidas) == 2 and len(andamento) == 1
+    for o in reais.values():  # todos os campos que o cadastro exige
+        for campo in ("name", "address", "start_date", "end_date", "company", "art", "size"):
+            assert o[campo], (o["name"], campo)
+        assert o["workers_total"] > 0 and 1 <= o["banner"] <= 8
+        assert o["demo_fonte"]["url"].startswith("https://")
+    huop = next(o for o in reais.values() if o["kind"] == "patologia")
+    an = client.get(f"/api/public/obras/{huop['id']}").json()["demo_analysis"]
+    assert an["resultado"]["estado_geral"] == "critico" and an["resultado"]["gut_maximo"] == 100

@@ -220,6 +220,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "company": "TEXT", "art": "TEXT", "size": "TEXT", "workers_count": "INTEGER DEFAULT 0",
         "status": "TEXT DEFAULT 'ativa'", "created_by": "TEXT", "updated_at": "TEXT",
         "kind": "TEXT DEFAULT 'geral'", "analysis": "TEXT",
+        "banner": "INTEGER",  # arte do card "Estágio atual" (1..8), sorteada ao criar a obra
     },
 }
 

@@ -32,6 +32,7 @@ import db  # noqa: E402
 import analise  # noqa: E402
 import yolo  # noqa: E402
 import demo_laudo_ufsc  # noqa: E402
+import demo_obras_reais  # noqa: E402
 import assistente  # noqa: E402
 import integrations  # noqa: E402
 
@@ -345,6 +346,8 @@ async def lifespan(_app: FastAPI):
     if SEED_DEMO:
         seed_demo()
         seed_demo_laudo()
+        seed_demo_obras_reais()
+    assign_missing_banners()
     logger.info("Backend pronto — banco SQLite em %s", db.DB_PATH)
     yield
 
@@ -763,6 +766,20 @@ def _validate_obra(data: dict) -> dict:
     return data
 
 
+# Banners do card "Estágio atual" (frontend/assets/images/banners/banner-obra-N.png)
+BANNER_COUNT = 8
+
+
+def random_banner() -> int:
+    return random.randint(1, BANNER_COUNT)
+
+
+def assign_missing_banners() -> None:
+    """Obras antigas (criadas antes dos banners) também ganham um banner sorteado."""
+    for o in db.find("obras", "banner IS NULL", [], limit=100000):
+        db.update("obras", o["id"], {"banner": random_banner()})
+
+
 def obra_summary(o: dict) -> dict:
     oid = o["id"]
     registered = db.count("workers", "obra_id = ?", [oid])
@@ -791,7 +808,7 @@ def _get_obra(obra_id: str) -> dict:
 
 # ---- Menu público: qualquer pessoa vê as obras e suas especificações (sem login) ----
 PUBLIC_OBRA_FIELDS = ("id", "kind", "name", "address", "start_date", "end_date", "progress", "company", "art", "size",
-                      "status", "created_at", "updated_at")
+                      "status", "created_at", "updated_at", "banner")
 
 
 def public_obra(o: dict) -> dict:
@@ -836,7 +853,8 @@ async def obras_list(user: dict = Depends(get_current_user)):
 async def obra_create(req: ObraIn, user: dict = Depends(get_current_user)):
     require_manager(user)
     data = _validate_obra(req.model_dump())
-    obra = {"id": uid(), **data, "status": "ativa", "created_by": user["id"], "seeded": False, "created_at": now_iso(), "updated_at": now_iso()}
+    obra = {"id": uid(), **data, "status": "ativa", "banner": random_banner(), "created_by": user["id"], "seeded": False,
+            "created_at": now_iso(), "updated_at": now_iso()}
     db.insert("obras", obra)
     return obra_summary(obra)
 
@@ -923,7 +941,8 @@ async def obra_draft_create(req: DraftIn, user: dict = Depends(get_current_user)
     if req.kind not in OBRA_KINDS:
         raise HTTPException(422, "Tipo inválido — use 'geral' ou 'patologia'")
     obra = {"id": uid(), "name": (req.name or "").strip() or DRAFT_NAME, "progress": 0, "status": "rascunho",
-            "kind": req.kind, "created_by": user["id"], "seeded": False, "created_at": now_iso(), "updated_at": now_iso()}
+            "kind": req.kind, "banner": random_banner(), "created_by": user["id"], "seeded": False,
+            "created_at": now_iso(), "updated_at": now_iso()}
     db.insert("obras", obra)
     return obra_summary(obra)
 
@@ -1387,6 +1406,43 @@ def seed_demo() -> None:
                               "service": s, "location": f"Pav {i + 1}", "result": r, "notes": "Registro de demonstração",
                               "created_at": now_iso()})
     logger.info("Dados de demonstração criados (login: engenheiro@demo.com / %s)", demo_pw)
+
+
+def seed_demo_obras_reais() -> None:
+    """4 obras REAIS de demonstração (1 patologia, 2 concluídas, 1 em andamento) — ver demo_obras_reais.py.
+    Cada uma é criada uma única vez; se o administrador excluir, não volta."""
+    def ja_criada(marker: str) -> bool:
+        return bool(db.find_one("integration_logs", "channel = 'seed' AND status = ?", [marker]))
+
+    def registrar(obra_id: str, marker: str, fonte: dict) -> None:
+        db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "channel": "seed", "status": marker,
+                                       "payload": {"fonte": fonte["url"]}, "created_at": now_iso()})
+
+    def nc(obra_id: str, n: dict, autor: str) -> None:
+        db.insert("nonconformities", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "user_name": autor,
+                                      "status": "aberta", "auto_generated": True, "created_at": now_iso(), **n})
+
+    m = demo_obras_reais
+    if not ja_criada(m.HUOP_MARKER):
+        oid = uid()
+        db.insert("obras", {"id": oid, **m.HUOP_OBRA, "status": "ativa", "seeded": False, "banner": random_banner(),
+                            "created_by": m.HUOP_MARKER, "analysis": m.huop_analysis(), "created_at": now_iso(), "updated_at": now_iso()})
+        for n in m.huop_ncs():
+            nc(oid, n, "Simulação (estudo UTFPR)")
+        registrar(oid, m.HUOP_MARKER, m.HUOP_FONTE)
+    for marker, d in m.GERAIS:
+        if ja_criada(marker):
+            continue
+        oid = uid()
+        db.insert("obras", {"id": oid, **d["obra"], "status": "ativa", "seeded": False, "banner": random_banner(),
+                            "created_by": marker, "analysis": d["analysis"], "created_at": now_iso(), "updated_at": now_iso()})
+        for n in d.get("ncs", []):
+            nc(oid, n, "Simulação (dados públicos)")
+        for date_, txt, weather in d.get("rdos", []):
+            db.insert("rdos", {"id": uid(), "obra_id": oid, "user_id": "seed", "user_name": "Simulação (dados públicos)", "text": txt,
+                               "weather": weather, "workers_count": None, "activities": [], "date": date_, "created_at": now_iso()})
+        registrar(oid, marker, d["analysis"]["resultado"]["fonte"])
+    logger.info("Obras reais de demonstração verificadas (HUOP, Ponte Hercílio Luz, Museu do Ipiranga, Linha 6-Laranja)")
 
 
 def seed_demo_laudo() -> None:

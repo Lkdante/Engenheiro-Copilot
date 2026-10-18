@@ -1,6 +1,6 @@
 // Menu de Obras — tela inicial PÚBLICA. Qualquer pessoa vê as obras e suas especificações.
 // Para acessar os dados internos de uma obra é preciso fazer login (na tela de detalhe).
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, ScrollView, ActivityIndicator, RefreshControl, TextInput } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,6 +11,7 @@ import { makeStyles, useTheme } from "@/src/settings";
 import { formatDateBR, sizeLabel, type PublicObra } from "@/src/obra";
 import KindAlert from "@/src/components/KindAlert";
 import { notify } from "@/src/notify";
+import { takePreloadedObras } from "@/src/preload";
 
 
 
@@ -23,8 +24,11 @@ export default function ObrasMenu() {
   const { colors, settings } = useTheme();
   const styles = useStyles();
   const router = useRouter();
-  const [items, setItems] = useState<PublicObra[]>([]);
-  const [loading, setLoading] = useState(true);
+  // A tela de carregamento já buscou a lista: abre o menu com ela, sem esperar outra requisição
+  const [preloaded] = useState(() => takePreloadedObras());
+  const [items, setItems] = useState<PublicObra[]>(preloaded || []);
+  const [loading, setLoading] = useState(!preloaded);
+  const skipFirstFetch = useRef(!!preloaded);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -33,6 +37,12 @@ export default function ObrasMenu() {
 
   const load = useCallback(async () => {
     setError("");
+    if (skipFirstFetch.current) {
+      skipFirstFetch.current = false;
+      setUser(await getStoredUser<any>());
+      setActiveId((await getActiveObra())?.id || null);
+      return;
+    }
     try {
       const r = await api<{ items: PublicObra[] }>("/public/obras", { auth: false });
       setItems(r.items || []);
@@ -160,7 +170,7 @@ export default function ObrasMenu() {
             >
               <View style={styles.cardTop}>
                 <View style={{ flex: 1 }}>
-                  {o.demo ? <Text style={styles.demoTag}>DEMONSTRAÇÃO • LAUDO REAL</Text> : null}
+                  {o.demo ? <Text style={styles.demoTag}>{o.kind === "patologia" ? "DEMONSTRAÇÃO • LAUDO REAL" : "DEMONSTRAÇÃO • OBRA REAL"}</Text> : null}
                   <Text style={styles.cardName} numberOfLines={2}>{o.name}</Text>
                   <View style={styles.row}>
                     <Ionicons name="location" size={12} color={colors.info} />

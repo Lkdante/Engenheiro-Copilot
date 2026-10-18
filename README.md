@@ -84,6 +84,8 @@ npx expo start --web
    nome, localidade, início, término previsto, estágio (%), empresa responsável, ART, porte e nº de funcionários.
    Tem **barra de pesquisa** pelo nome da obra e botão de **Configurações** (engrenagem).
 2. **Detalhe da obra** — ao tocar numa obra aparecem as especificações e o botão **FAZER LOGIN PARA ACESSAR**.
+   O card **Estágio atual** tem um banner em traço (8 artes em `frontend/assets/images/banners/`), sorteado para cada obra
+   no cadastro (campo `banner` no banco; obras antigas recebem um sorteado ao iniciar o backend).
 3. **Login** — depois de entrar, o app abre direto a obra escolhida (dashboard, copiloto, RDO, NCs, EPIs, etc.).
 
 - **Cadastrar obra**: botão **+** no menu (administrador, engenheiro e diretor logados) — veja abaixo.
@@ -125,6 +127,20 @@ O menu traz a obra **DEMO • CSE Bloco C — UFSC**, montada com o *Relatório 
 Centro Socioeconômico (Bloco C) da UFSC, out/2011 — [PDF público](https://dfo.ufsc.br/files/2011/12/RELATORIO_CSE_C_V07.pdf).
 Manifestações, locais, quantidades, causas e soluções são do relatório; as **notas GUT foram atribuídas pela simulação**
 (o relatório não classifica prioridade). Abra pelo menu → obra → **Ver laudo de demonstração** (sem login).
+
+### Obras reais de demonstração (dados públicos)
+
+Criadas no primeiro start do backend (`backend/demo_obras_reais.py`), cada uma com a fonte pública na tela de detalhe:
+
+| Obra | Tipo | Situação | Fonte |
+|---|---|---|---|
+| HUOP — Bloco Lacepe, Cascavel/PR | Patologia (12 manifestações, GUT) | laudo/estudo de 2019 | TCC UTFPR (2019) |
+| Ponte Hercílio Luz — restauração, Florianópolis/SC | Obra geral | concluída (reaberta em 30/12/2019) | NSC Total / Governo de SC |
+| Museu do Ipiranga — restauro e ampliação, São Paulo/SP | Obra geral | concluída (reaberto em 07/09/2022) | Ficha da obra — SEF/USP |
+| Linha 6-Laranja do Metrô, São Paulo/SP | Obra geral | em andamento (81,5% em maio/2026) | Diário do Transporte / IstoÉ / Poder360 |
+
+Campos sem registro público (ART, nº de funcionários, datas exatas de vistoria/término) foram **criados apenas para
+demonstrar** e isso aparece escrito na obra.
 
 ## Configurações
 

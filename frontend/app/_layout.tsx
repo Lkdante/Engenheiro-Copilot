@@ -1,6 +1,6 @@
 import { Stack, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -8,6 +8,8 @@ import { StatusBar } from "expo-status-bar";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { Toaster } from "@/src/components/Toaster";
+import { LoadingScreen } from "@/src/components/LoadingScreen";
+import { INITIAL_STEPS, progressOf, runNetworkSteps, type LoadStep } from "@/src/preload";
 import { ConfirmHost } from "@/src/components/ConfirmHost";
 import { clearAuth, setObraMissingHandler, setUnauthorizedHandler } from "@/src/api";
 import { SettingsProvider, loadSettings, useTheme, type Settings } from "@/src/settings";
@@ -34,16 +36,42 @@ export default function RootLayout() {
     })();
   }, []);
 
-  useEffect(() => {
-    if ((loaded || error) && settings) SplashScreen.hideAsync().catch(() => {});
-  }, [loaded, error, settings]);
+  // ---------------------------------------------------------------- carregamento REAL
+  // Cada etapa (fontes, configurações, servidor/sessão, obras) avança a barra quando termina de verdade.
+  const [steps, setSteps] = useState<LoadStep[]>(INITIAL_STEPS);
+  const updateStep = useCallback((id: string, patch: Partial<LoadStep>) => {
+    setSteps((prev) => prev.map((st) => (st.id === id ? { ...st, ...patch } : st)));
+  }, []);
 
-  if ((!loaded && !error) || !settings) {
-    return (
-      <View style={{ flex: 1, backgroundColor: lightPalette.surfaceInverse, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color={lightPalette.brand} />
-      </View>
-    );
+  useEffect(() => {
+    if (loaded || error) updateStep("fontes", { state: error ? "falhou" : "ok" });
+  }, [loaded, error, updateStep]);
+
+  useEffect(() => {
+    if (!settings) return;
+    updateStep("config", { state: "ok" });
+    runNetworkSteps(updateStep, settings.rememberSession);
+  }, [settings, updateStep]);
+
+  const progress = useMemo(() => progressOf(steps), [steps]);
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    if (progress < 100 || entered) return;
+    const t = setTimeout(() => setEntered(true), 600); // mostra "PRONTO" com a estrutura completa por um instante
+    return () => clearTimeout(t);
+  }, [progress, entered]);
+
+  const hideNativeSplash = () => {
+    SplashScreen.hideAsync().catch(() => {});
+    // web: tira o pré-carregamento em HTML (app/+html.tsx) — a tela de carregamento real assume daqui
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      const el = document.getElementById("boot-splash");
+      if (el) { el.classList.add("sai"); setTimeout(() => el.remove(), 300); }
+    }
+  };
+
+  if (!entered || !settings) {
+    return <LoadingScreen steps={steps} progress={progress} onFirstLayout={hideNativeSplash} />;
   }
 
   return (

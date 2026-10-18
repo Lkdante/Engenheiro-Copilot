@@ -1,6 +1,6 @@
 // Detalhe público da obra: especificações abertas a todos + botão de login para acessar a obra.
 import { useCallback, useState } from "react";
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, ScrollView, ActivityIndicator, Image, Linking } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -10,6 +10,7 @@ import { makeStyles, useTheme } from "@/src/settings";
 import { formatDateBR, sizeLabel, type PublicObra } from "@/src/obra";
 import KindAlert from "@/src/components/KindAlert";
 import { notify } from "@/src/notify";
+import { bannerFor } from "@/src/banners";
 
 const RESTRICTED = [
   { icon: "stats-chart", label: "Dashboard e indicadores" },
@@ -21,7 +22,7 @@ const RESTRICTED = [
 ];
 
 export default function ObraDetalhe() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const styles = useStyles();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -79,15 +80,37 @@ export default function ObraDetalhe() {
         <View style={styles.scroll}><Text style={styles.errorText}>{error || "Obra não encontrada"}</Text></View>
       ) : (
         <ScrollView contentContainerStyle={styles.scroll}>
-          <View style={styles.progressBlock}>
-            <Text style={styles.pLabel}>ESTÁGIO ATUAL</Text>
+          <View style={[styles.progressBlock, !isDark && { backgroundColor: "#FFFFFF" }]}>
+            {/* banner da obra (sorteado no cadastro) — fica atrás das informações.
+                Tema escuro: fundo preto e traço branco; tema claro: fundo branco e traço preto. */}
+            <Image source={bannerFor(obra, isDark)} style={styles.banner} resizeMode="cover" accessibilityIgnoresInvertColors />
+            <Text style={[styles.pLabel, !isDark && { color: colors.brand }]}>ESTÁGIO ATUAL</Text>
             <Text style={styles.pValue}>{Math.round(obra.progress || 0)}%</Text>
             <View style={styles.progressBar}><View style={[styles.progressFill, { width: `${Math.min(100, obra.progress || 0)}%` }]} /></View>
             {late ? <Text style={styles.late}>Prazo previsto vencido há {-(obra.days_left as number)} dias</Text> :
-              obra.days_left !== null && (obra.progress ?? 0) < 100 ? <Text style={styles.pSub}>{obra.days_left} dias para o término previsto</Text> : null}
+              obra.days_left !== null && (obra.progress ?? 0) < 100 ? <Text style={[styles.pSub, !isDark && { color: "#27272A" }]}>{obra.days_left} dias para o término previsto</Text> : null}
           </View>
 
-          {obra.demo ? (
+          {obra.demo && obra.kind !== "patologia" ? (
+            <View style={styles.lockBox}>
+              <View style={styles.lockHead}>
+                <Ionicons name="school" size={18} color={colors.brand} />
+                <Text style={styles.lockTitle}>DEMONSTRAÇÃO — OBRA REAL</Text>
+              </View>
+              <Text style={styles.lockText}>
+                Dados públicos de {obra.demo_fonte?.titulo} ({obra.demo_fonte?.instituicao}, {obra.demo_fonte?.data}).
+              </Text>
+              {obra.demo_fonte?.observacao ? <Text style={styles.lockText}>{obra.demo_fonte.observacao}</Text> : null}
+              {obra.demo_fonte?.url ? (
+                <Pressable onPress={() => Linking.openURL(obra.demo_fonte!.url)} style={[styles.primaryBtn, { minHeight: 48, paddingVertical: spacing.md }]}>
+                  <Ionicons name="open-outline" size={18} color={colors.onBrand} />
+                  <Text style={styles.primaryBtnText}>VER FONTE PÚBLICA</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
+          {obra.demo && obra.kind === "patologia" ? (
             <View style={styles.lockBox}>
               <View style={styles.lockHead}>
                 <Ionicons name="school" size={18} color={colors.brand} />
@@ -96,6 +119,7 @@ export default function ObraDetalhe() {
               <Text style={styles.lockText}>
                 Simulação do módulo de patologia com os dados do {obra.demo_fonte?.titulo} ({obra.demo_fonte?.instituicao}, {obra.demo_fonte?.data}).
               </Text>
+              {obra.demo_fonte?.observacao ? <Text style={styles.lockText}>{obra.demo_fonte.observacao}</Text> : null}
               <Pressable testID="ver-laudo-demo" onPress={() => router.push({ pathname: "/patologia", params: { id: obra.id } })} style={[styles.primaryBtn, { minHeight: 48, paddingVertical: spacing.md }]}>
                 <Ionicons name="document-text" size={18} color={colors.onBrand} />
                 <Text style={styles.primaryBtnText}>VER LAUDO DE DEMONSTRAÇÃO</Text>
@@ -167,10 +191,11 @@ const useStyles = makeStyles((colors, fontSize) => ({
   hTitle: { fontFamily: fonts.display, fontSize: fontSize.xl, fontWeight: "900", color: colors.onSurface, letterSpacing: -0.5, marginTop: 2 },
   scroll: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing["3xl"] },
   errorText: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.error },
-  progressBlock: { borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceInverse, padding: spacing.lg },
+  progressBlock: { borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: "#000000", padding: spacing.lg, aspectRatio: 2, minHeight: 170, justifyContent: "flex-end", overflow: "hidden" },
+  banner: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, width: "100%", height: "100%" },
   pLabel: { fontFamily: fonts.mono, fontSize: fontSize.xs, letterSpacing: 1.5, color: colors.brandTertiary, fontWeight: "700" },
   pValue: { fontFamily: fonts.display, fontSize: fontSize["4xl"], fontWeight: "900", color: colors.brand, letterSpacing: -2, marginTop: 4 },
-  pSub: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurfaceInverse, marginTop: spacing.sm },
+  pSub: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: "#E4E4E7", marginTop: spacing.sm },
   late: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.error, marginTop: spacing.sm, fontWeight: "700" },
   progressBar: { height: 8, backgroundColor: colors.surfaceTertiary, marginTop: spacing.md, borderWidth: 2, borderColor: colors.borderStrong },
   progressFill: { height: "100%", backgroundColor: colors.brand },
