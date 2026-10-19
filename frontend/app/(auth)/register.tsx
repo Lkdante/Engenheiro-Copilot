@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -20,6 +20,41 @@ export default function Register() {
   const [role, setRole] = useState("engenheiro");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [sent, setSent] = useState("");
+  const [claim, setClaim] = useState("");
+
+  // Depois de entrar, vai para a obra escolhida (se veio de uma) ou para a lista de obras
+  const entrar = async (token: string, user: any) => {
+    await saveAuth(token, user);
+    if (obraId) {
+      await setActiveObra({ id: obraId, name: obraName || "Obra" });
+      router.replace("/(tabs)/obra");
+    } else {
+      router.replace("/obras");
+    }
+  };
+
+  // Depois do cadastro, pergunta ao backend a cada 3 s se o link do e-mail já foi aberto.
+  // Quando foi, o backend devolve o login pronto e o app entra sozinho.
+  useEffect(() => {
+    if (!claim) return;
+    let ativo = true;
+    const timer = setInterval(async () => {
+      try {
+        const r = await api<{ confirmed: boolean; token?: string; user?: any }>("/auth/register/status", { method: "POST", body: { claim }, auth: false });
+        if (ativo && r.confirmed && r.token) {
+          clearInterval(timer);
+          await entrar(r.token, r.user);
+        }
+      } catch (e: any) {
+        if (e?.status === 404) clearInterval(timer); // código vencido ou já usado
+      }
+    }, 3000);
+    return () => {
+      ativo = false;
+      clearInterval(timer);
+    };
+  }, [claim]);
   const submit = async () => {
     setErr("");
     if (name.trim().length < 2) return setErr("Informe seu nome completo.");
@@ -27,14 +62,14 @@ export default function Register() {
     if (password.length < 6) return setErr("A senha precisa ter pelo menos 6 caracteres.");
     setLoading(true);
     try {
-      const r = await api<{ token: string; user: any }>("/auth/register", { method: "POST", body: { name: name.trim(), email: email.trim(), password, role }, auth: false });
-      await saveAuth(r.token, r.user);
-      if (obraId) {
-        await setActiveObra({ id: obraId, name: obraName || "Obra" });
-        router.replace("/(tabs)/obra");
-      } else {
-        router.replace("/obras");
+      const r = await api<{ token?: string; user?: any; pending?: boolean; message?: string; claim?: string }>("/auth/register", { method: "POST", body: { name: name.trim(), email: email.trim(), password, role }, auth: false });
+      if (r.token) {
+        await entrar(r.token, r.user);
+        return;
       }
+      // A conta só é criada depois que a pessoa abre o link do e-mail
+      setSent(r.message || "Enviamos um link de confirmação para o seu e-mail.");
+      setClaim(r.claim || "");
     } catch (e: any) {
       setErr(e?.message || "Erro ao cadastrar");
     } finally {
@@ -50,6 +85,27 @@ export default function Register() {
             <Ionicons name="arrow-back" size={22} color={colors.onSurface} />
           </Pressable>
           <Text style={styles.title}>NOVA CONTA</Text>
+
+          {sent ? (
+            <View style={styles.okBox} testID="register-sent">
+              <Ionicons name="mail-unread" size={28} color={colors.brand} />
+              <Text style={styles.okTitle}>CONFIRME SEU E-MAIL</Text>
+              <Text style={styles.okText}>{sent}</Text>
+              {claim ? (
+                <View style={styles.waitRow} testID="register-waiting">
+                  <ActivityIndicator color={colors.brand} />
+                  <Text style={styles.waitText}>Aguardando você abrir o link... assim que confirmar, você entra automaticamente.</Text>
+                </View>
+              ) : null}
+              <Pressable testID="register-resend" onPress={submit} style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.85 }]}>
+                {loading ? <ActivityIndicator color={colors.onSurface} /> : <Text style={styles.secondaryBtnText}>REENVIAR E-MAIL</Text>}
+              </Pressable>
+              <Pressable testID="register-goto-login" onPress={() => router.replace({ pathname: "/(auth)/login", params: obraId ? { obraId, obraName: obraName || "" } : {} } as any)} style={styles.primaryBtn}>
+                <Text style={styles.primaryBtnText}>JÁ CONFIRMEI, IR PARA O LOGIN</Text>
+              </Pressable>
+            </View>
+          ) : (
+          <>
 
           <Text style={styles.label}>NOME COMPLETO</Text>
           <TextInput testID="register-name" value={name} onChangeText={setName} style={styles.input} placeholder="Seu nome" placeholderTextColor={colors.info} />
@@ -74,6 +130,8 @@ export default function Register() {
           <Pressable testID="register-submit" onPress={submit} style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}>
             {loading ? <ActivityIndicator color={colors.onBrand} /> : <Text style={styles.primaryBtnText}>CRIAR CONTA</Text>}
           </Pressable>
+          </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -95,4 +153,11 @@ const useStyles = makeStyles((colors, fontSize) => ({
   primaryBtn: { marginTop: spacing.xl, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.lg, alignItems: "center", minHeight: 52 },
   primaryBtnText: { color: colors.onBrand, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1 },
   err: { color: colors.error, fontFamily: fonts.mono, fontSize: fontSize.sm, marginTop: spacing.md },
+  okBox: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.lg, backgroundColor: colors.brandTertiary, gap: spacing.sm },
+  okTitle: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.lg, letterSpacing: 0.5, color: colors.onSurface },
+  okText: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurfaceSecondary },
+  waitRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm },
+  waitText: { flex: 1, fontFamily: fonts.mono, fontSize: fontSize.sm, fontWeight: "700", color: colors.onSurface },
+  secondaryBtn: { marginTop: spacing.md, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface, paddingVertical: spacing.lg, alignItems: "center", minHeight: 52 },
+  secondaryBtnText: { color: colors.onSurface, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1 },
 }));
