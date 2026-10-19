@@ -90,6 +90,11 @@ export default function ObrasMenu() {
           <Ionicons name="settings-outline" size={20} color={colors.onSurface} />
         </Pressable>
         {user ? (
+          <Pressable testID="menu-conta" onPress={() => router.push("/conta")} style={styles.iconBtn} accessibilityLabel="Minha conta">
+            <Ionicons name="person-circle-outline" size={22} color={colors.onSurface} />
+          </Pressable>
+        ) : null}
+        {user ? (
           <Pressable testID="menu-logout" onPress={logout} style={styles.iconBtn} accessibilityLabel="Sair da conta">
             <Ionicons name="log-out-outline" size={20} color={colors.onSurface} />
           </Pressable>
@@ -102,12 +107,14 @@ export default function ObrasMenu() {
       </View>
 
       {user ? (
-        <View style={styles.userBar}>
+        <Pressable testID="userbar-conta" onPress={() => router.push("/conta")} style={styles.userBar} accessibilityLabel="Abrir minha conta">
           <Ionicons name="person-circle" size={18} color={colors.brand} />
           <Text style={styles.userText} numberOfLines={1}>
             {user.name} • {roleLabel[user.role] || user.role}
           </Text>
-        </View>
+          <Text style={styles.userLink}>MINHA CONTA</Text>
+          <Ionicons name="chevron-forward" size={14} color={colors.brand} />
+        </Pressable>
       ) : null}
 
       <View style={styles.searchWrap}>
@@ -238,6 +245,7 @@ const useStyles = makeStyles((colors, fontSize) => ({
   loginText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, color: colors.onBrand, letterSpacing: 1 },
   userBar: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, backgroundColor: colors.surfaceSecondary, borderBottomWidth: 1, borderBottomColor: colors.border },
   userText: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurface, fontWeight: "700", flex: 1 },
+  userLink: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.brand, fontWeight: "700", letterSpacing: 1 },
   searchWrap: { flexDirection: "row", alignItems: "center", gap: spacing.sm, margin: spacing.lg, marginBottom: 0, paddingHorizontal: spacing.md, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary, minHeight: 48 },
   searchInput: { flex: 1, fontFamily: fonts.mono, fontSize: fontSize.base, color: colors.onSurface, paddingVertical: spacing.sm },
   count: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, fontWeight: "700", letterSpacing: 1 },
