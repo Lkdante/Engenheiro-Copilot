@@ -1,7 +1,7 @@
 // Menu de Obras — tela inicial PÚBLICA. Qualquer pessoa vê as obras e suas especificações.
 // Para acessar os dados internos de uma obra é preciso fazer login (na tela de detalhe).
 import { useCallback, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, ScrollView, ActivityIndicator, RefreshControl, TextInput } from "react-native";
+import { View, Text, Pressable, ScrollView, ActivityIndicator, RefreshControl, TextInput, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -12,6 +12,10 @@ import { formatDateBR, sizeLabel, type PublicObra } from "@/src/obra";
 import KindAlert from "@/src/components/KindAlert";
 import { notify } from "@/src/notify";
 import { takePreloadedObras } from "@/src/preload";
+
+// Fundo dos cartões sem foto: planta baixa genérica (traço brutalista), bem suave
+const PLANTA = require("../assets/images/obra-planta-generica.png");
+const ON_PHOTO = "#FFFFFF";
 
 
 
@@ -34,6 +38,8 @@ export default function ObrasMenu() {
   const [query, setQuery] = useState("");
   const [user, setUser] = useState<any>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // fotos que não carregaram (sem internet, link fora do ar): o cartão volta ao visual com a planta
+  const [badCover, setBadCover] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     setError("");
@@ -90,11 +96,6 @@ export default function ObrasMenu() {
           <Ionicons name="settings-outline" size={20} color={colors.onSurface} />
         </Pressable>
         {user ? (
-          <Pressable testID="menu-conta" onPress={() => router.push("/conta")} style={styles.iconBtn} accessibilityLabel="Minha conta">
-            <Ionicons name="person-circle-outline" size={22} color={colors.onSurface} />
-          </Pressable>
-        ) : null}
-        {user ? (
           <Pressable testID="menu-logout" onPress={logout} style={styles.iconBtn} accessibilityLabel="Sair da conta">
             <Ionicons name="log-out-outline" size={20} color={colors.onSurface} />
           </Pressable>
@@ -107,14 +108,12 @@ export default function ObrasMenu() {
       </View>
 
       {user ? (
-        <Pressable testID="userbar-conta" onPress={() => router.push("/conta")} style={styles.userBar} accessibilityLabel="Abrir minha conta">
+        <View style={styles.userBar}>
           <Ionicons name="person-circle" size={18} color={colors.brand} />
           <Text style={styles.userText} numberOfLines={1}>
             {user.name} • {roleLabel[user.role] || user.role}
           </Text>
-          <Text style={styles.userLink}>MINHA CONTA</Text>
-          <Ionicons name="chevron-forward" size={14} color={colors.brand} />
-        </Pressable>
+        </View>
       ) : null}
 
       <View style={styles.searchWrap}>
@@ -166,52 +165,66 @@ export default function ObrasMenu() {
             </View>
           ) : null}
 
-          {visible.map((o) => (
+          {visible.map((o) => {
+            const ph = !!o.cover_url && !badCover[o.id]; // cartão com foto
+            return (
             <Pressable
               key={o.id}
               testID={`obra-card-${o.id}`}
               onPress={() => router.push({ pathname: "/obra-detalhe", params: { id: o.id } })}
               accessibilityRole="button"
               accessibilityLabel={`Obra ${o.name}, ${Math.round(o.progress || 0)} por cento concluída`}
-              style={({ pressed }) => [styles.card, o.id === activeId && styles.cardActive, pressed && { opacity: 0.85 }]}
+              style={({ pressed }) => [styles.card, ph && styles.cardPhoto, o.id === activeId && styles.cardActive, pressed && { opacity: 0.85 }]}
             >
+              {/* fundo: foto da obra escurecida 30%  —  ou, sem foto, a planta genérica bem suave */}
+              {ph ? (
+                <>
+                  <Image source={{ uri: o.cover_url! }} style={styles.cardBg} resizeMode="cover"
+                    onError={() => setBadCover((b) => ({ ...b, [o.id]: true }))} accessibilityIgnoresInvertColors />
+                  <View style={styles.cardShade} />
+                </>
+              ) : (
+                <Image source={PLANTA} style={[styles.cardBg, styles.cardPlan]} resizeMode="cover" />
+              )}
               <View style={styles.cardTop}>
                 <View style={{ flex: 1 }}>
                   {o.demo ? <Text style={styles.demoTag}>{o.kind === "patologia" ? "DEMONSTRAÇÃO • LAUDO REAL" : "DEMONSTRAÇÃO • OBRA REAL"}</Text> : null}
-                  <Text style={styles.cardName} numberOfLines={2}>{o.name}</Text>
+                  <Text style={[styles.cardName, ph && styles.onPhoto]} numberOfLines={2}>{o.name}</Text>
                   <View style={styles.row}>
-                    <Ionicons name="location" size={12} color={colors.info} />
-                    <Text style={styles.cardMeta} numberOfLines={1}>{o.address || "—"}</Text>
+                    <Ionicons name="location" size={12} color={ph ? ON_PHOTO : colors.info} />
+                    <Text style={[styles.cardMeta, ph && styles.onPhotoSoft]} numberOfLines={1}>{o.address || "—"}</Text>
                   </View>
                 </View>
-                {o.size ? <View style={styles.sizeTag}><Text style={styles.sizeText}>{sizeLabel(o.size)}</Text></View> : null}
+                {o.size ? <View style={[styles.sizeTag, ph && styles.glass]}><Text style={[styles.sizeText, ph && styles.onPhoto]}>{sizeLabel(o.size)}</Text></View> : null}
               </View>
 
               <View style={styles.progressRow}>
-                <View style={styles.progressBar}><View style={[styles.progressFill, { width: `${Math.min(100, o.progress || 0)}%` }]} /></View>
-                <Text style={styles.progressText}>{Math.round(o.progress || 0)}%</Text>
+                <View style={[styles.progressBar, ph && styles.glassBar]}><View style={[styles.progressFill, { width: `${Math.min(100, o.progress || 0)}%` }]} /></View>
+                <Text style={[styles.progressText, ph && styles.onPhoto]}>{Math.round(o.progress || 0)}%</Text>
               </View>
 
               {!compact ? (
                 <>
                   <View style={styles.infoGrid}>
-                    <Info icon="calendar" label="INÍCIO" value={formatDateBR(o.start_date)} />
-                    <Info icon="flag" label="TÉRMINO PREV." value={formatDateBR(o.end_date)} />
-                    <Info icon="people" label="FUNCIONÁRIOS" value={String(o.workers_total ?? 0)} />
-                    <Info icon="document-text" label="ART" value={o.art || "—"} />
+                    <Info icon="calendar" label="INÍCIO" value={formatDateBR(o.start_date)} photo={ph} />
+                    <Info icon="flag" label="TÉRMINO PREV." value={formatDateBR(o.end_date)} photo={ph} />
+                    <Info icon="people" label="FUNCIONÁRIOS" value={String(o.workers_total ?? 0)} photo={ph} />
+                    <Info icon="document-text" label="ART" value={o.art || "—"} photo={ph} />
                   </View>
                   <View style={styles.cardFoot}>
-                    <Text style={styles.cardMeta} numberOfLines={1}>{o.company || "Empresa não informada"}</Text>
-                    {o.id === activeId ? <Text style={styles.activeText}>ÚLTIMA ACESSADA</Text> : <Ionicons name="chevron-forward" size={18} color={colors.info} />}
+                    <Text style={[styles.cardMeta, ph && styles.onPhotoSoft]} numberOfLines={1}>{o.company || "Empresa não informada"}</Text>
+                    {o.id === activeId ? <Text style={styles.activeText}>ÚLTIMA ACESSADA</Text> : <Ionicons name="chevron-forward" size={18} color={ph ? ON_PHOTO : colors.info} />}
                   </View>
                   {o.days_left !== null && o.days_left < 0 && (o.progress ?? 0) < 100 ? (
                     <Text style={styles.lateText}>Prazo vencido há {-o.days_left} dias</Text>
                   ) : null}
                 </>
               ) : null}
+              {ph ? <Text style={styles.credit} numberOfLines={1}>FOTO: WIKIMEDIA COMMONS</Text> : null}
               <KindAlert kind={o.kind} />
             </Pressable>
-          ))}
+            );
+          })}
         </ScrollView>
       )}
 
@@ -224,13 +237,13 @@ export default function ObrasMenu() {
   );
 }
 
-function Info({ icon, label, value }: { icon: any; label: string; value: string }) {
+function Info({ icon, label, value, photo }: { icon: any; label: string; value: string; photo?: boolean }) {
   const { colors } = useTheme();
   const styles = useStyles();
   return (
-    <View style={styles.info}>
-      <Text style={styles.infoLabel}><Ionicons name={icon} size={10} color={colors.info} /> {label}</Text>
-      <Text style={styles.infoValue} numberOfLines={1}>{value}</Text>
+    <View style={[styles.info, photo && styles.glass]}>
+      <Text style={[styles.infoLabel, photo && styles.onPhotoSoft]}><Ionicons name={icon} size={10} color={photo ? ON_PHOTO : colors.info} /> {label}</Text>
+      <Text style={[styles.infoValue, photo && styles.onPhoto]} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
@@ -245,12 +258,21 @@ const useStyles = makeStyles((colors, fontSize) => ({
   loginText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, color: colors.onBrand, letterSpacing: 1 },
   userBar: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, backgroundColor: colors.surfaceSecondary, borderBottomWidth: 1, borderBottomColor: colors.border },
   userText: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurface, fontWeight: "700", flex: 1 },
-  userLink: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.brand, fontWeight: "700", letterSpacing: 1 },
   searchWrap: { flexDirection: "row", alignItems: "center", gap: spacing.sm, margin: spacing.lg, marginBottom: 0, paddingHorizontal: spacing.md, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary, minHeight: 48 },
   searchInput: { flex: 1, fontFamily: fonts.mono, fontSize: fontSize.base, color: colors.onSurface, paddingVertical: spacing.sm },
   count: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, fontWeight: "700", letterSpacing: 1 },
   scroll: { padding: spacing.lg, gap: spacing.md, paddingBottom: 120 },
-  card: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, gap: spacing.sm, backgroundColor: colors.surface },
+  // cartão da obra: borda cinza, cantos arredondados (aplicados pelo tema) e fundo com foto ou planta
+  card: { borderWidth: 2, borderColor: colors.borderStrong, /* claro: preto • escuro: cinza */ padding: spacing.md, gap: spacing.sm, backgroundColor: colors.surface, overflow: "hidden" },
+  cardPhoto: { backgroundColor: "#000000" },
+  cardBg: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, width: "100%", height: "100%" },
+  cardShade: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.30)" }, // escurece 30%
+  cardPlan: { opacity: 0.35 },
+  onPhoto: { color: "#FFFFFF", textShadowColor: "rgba(0,0,0,0.85)", textShadowRadius: 6, textShadowOffset: { width: 0, height: 1 } },
+  onPhotoSoft: { color: "#F4F4F5", textShadowColor: "rgba(0,0,0,0.85)", textShadowRadius: 6, textShadowOffset: { width: 0, height: 1 } },
+  glass: { backgroundColor: "rgba(0,0,0,0.45)", borderColor: "rgba(255,255,255,0.35)" },
+  glassBar: { backgroundColor: "rgba(255,255,255,0.25)", borderColor: "rgba(255,255,255,0.6)" },
+  credit: { fontFamily: fonts.mono, fontSize: fontSize.xs - 2, color: "rgba(255,255,255,0.75)", letterSpacing: 0.5, marginBottom: -spacing.xs },
   cardActive: { borderColor: colors.brand, borderWidth: 3 },
   cardTop: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start" },
   demoTag: { alignSelf: "flex-start", fontFamily: fonts.mono, fontSize: fontSize.xs - 1, fontWeight: "700", letterSpacing: 1, color: colors.onBrand, backgroundColor: colors.brand, paddingHorizontal: 6, paddingVertical: 1, marginBottom: 4 },

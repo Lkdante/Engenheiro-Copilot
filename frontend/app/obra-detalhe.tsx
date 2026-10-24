@@ -101,6 +101,7 @@ export default function ObraDetalhe() {
                 Dados públicos de {obra.demo_fonte?.titulo} ({obra.demo_fonte?.instituicao}, {obra.demo_fonte?.data}).
               </Text>
               {obra.demo_fonte?.observacao ? <Text style={styles.lockText}>{obra.demo_fonte.observacao}</Text> : null}
+              {obra.cover_credito ? <Text style={styles.lockText}>{obra.cover_credito}</Text> : null}
               {obra.demo_fonte?.url ? (
                 <Pressable onPress={() => Linking.openURL(obra.demo_fonte!.url)} style={[styles.primaryBtn, { minHeight: 48, paddingVertical: spacing.md }]}>
                   <Ionicons name="open-outline" size={18} color={colors.onBrand} />

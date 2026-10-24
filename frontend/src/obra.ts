@@ -56,6 +56,8 @@ export type PublicObra = {
   days_left: number | null;
   created_at: string;
   banner?: number | null; // arte do card "Estágio atual" (1..8)
+  cover_url?: string | null; // foto da obra no Menu de Obras
+  cover_credito?: string | null;
   demo?: boolean;
   demo_fonte?: { titulo: string; instituicao: string; data: string; url: string; observacao?: string };
   demo_analysis?: any;

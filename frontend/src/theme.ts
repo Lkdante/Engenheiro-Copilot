@@ -31,8 +31,8 @@ export const lightPalette: Palette = {
   warning: "#F59E0B",
   error: "#DC2626",
   info: "#52525B",
-  border: "#E4E4E7",
-  borderStrong: "#D4D4D8", // antes preto (#09090B): containers no mesmo estilo do tema escuro
+  border: "#09090B",       // contornos dos containers em preto no tema claro
+  borderStrong: "#09090B",
   divider: "#E4E4E7",
 };
 

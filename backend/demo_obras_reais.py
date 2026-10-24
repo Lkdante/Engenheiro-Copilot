@@ -12,7 +12,32 @@ na própria obra (campo `fonte.criados`) — nada é apresentado como dado ofici
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from analise import AREAS
+
+
+def _commons(arquivo: str, largura: int = 1000) -> str:
+    """Foto do Wikimedia Commons (licença livre). Special:FilePath redireciona para a imagem no tamanho pedido."""
+    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(arquivo)}?width={largura}"
+
+
+def _credito(arquivo: str) -> str:
+    return f"Foto: Wikimedia Commons — {arquivo} (licença livre; autoria na página do arquivo: " \
+           f"https://commons.wikimedia.org/wiki/File:{quote(arquivo.replace(' ', '_'))})"
+
+
+# Fotos reais (Wikimedia Commons). O HUOP não tem foto livre publicada -> usa o desenho genérico de planta.
+FOTOS = {
+    "demo-real-ponte-hercilio-luz": "Ponte Hercílio Luz - Florianópolis - 20221001123640.jpg",
+    "demo-real-museu-ipiranga": "Museu do Ipiranga - Fachada.jpg",
+    "demo-real-linha6-laranja": "Estação SESC-Pompeia • Linha 6 Laranja • São Paulo Metro • construção em julho 2022 • 3.jpg",
+}
+
+
+def capa(marker: str) -> dict:
+    arq = FOTOS.get(marker)
+    return {"cover_url": _commons(arq), "cover_credito": _credito(arq)} if arq else {}
 
 # ====================================================================== 1 · PATOLOGIA — HUOP
 HUOP_FONTE = {

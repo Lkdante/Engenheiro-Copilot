@@ -89,7 +89,6 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL,
     obra_id TEXT REFERENCES obras(id),
-    email_verified_at TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -195,40 +194,6 @@ CREATE TABLE IF NOT EXISTS quality (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS auth_tokens (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
-    token_hash TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL CHECK (kind IN ('verificacao_email', 'reset_senha')),
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id, kind);
-
-CREATE TABLE IF NOT EXISTS pending_registrations (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
-    claim_hash TEXT,
-    user_id TEXT,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_pending_email ON pending_registrations(email);
-
-CREATE TABLE IF NOT EXISTS login_events (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
-    ip TEXT,
-    user_agent TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id);
-
 CREATE TABLE IF NOT EXISTS integration_logs (
     id TEXT PRIMARY KEY,
     obra_id TEXT,
@@ -256,6 +221,8 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "status": "TEXT DEFAULT 'ativa'", "created_by": "TEXT", "updated_at": "TEXT",
         "kind": "TEXT DEFAULT 'geral'", "analysis": "TEXT",
         "banner": "INTEGER",  # arte do card "Estágio atual" (1..8), sorteada ao criar a obra
+        "cover_url": "TEXT",      # foto da obra no Menu de Obras (vazio = desenho genérico de planta)
+        "cover_credito": "TEXT",  # autoria/licença da foto
     },
 }
 
@@ -269,36 +236,6 @@ def init_db() -> None:
             for col, ddl in cols.items():
                 if col not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-        _migrate(conn)  # migrações da confirmação de e-mail
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
-    if "email_verified_at" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
-        conn.execute("UPDATE users SET email_verified_at = created_at")
-
-    # Cadastro pendente: código de espera do app (claim_hash) e conta criada (user_id)
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(pending_registrations)")}
-    for col in ("claim_hash", "user_id"):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE pending_registrations ADD COLUMN {col} TEXT")
-    # (o índice fica aqui, e não no SCHEMA, porque em bancos antigos a coluna só existe depois do ALTER)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_claim ON pending_registrations(claim_hash)")
-
-
-# Tabelas de registros da obra que guardam o nome de quem criou
-TABELAS_COM_AUTOR = ("rdos", "photos", "inspections", "checklists", "nonconformities", "quality")
-
-
-def delete_account(user_id: str, email: str) -> None:
-    with _lock, connect() as conn:
-        for tabela in ("auth_tokens", "login_events", "chat_messages"):
-            conn.execute(f"DELETE FROM {tabela} WHERE user_id = ?", [user_id])
-        conn.execute("DELETE FROM pending_registrations WHERE email = ?", [email])
-        for tabela in TABELAS_COM_AUTOR:
-            conn.execute(f"UPDATE {tabela} SET user_name = 'Usuário removido' WHERE user_id = ?", [user_id])
-        conn.execute("DELETE FROM users WHERE id = ?", [user_id])
 
 
 def _encode(table: str, doc: dict) -> dict:
