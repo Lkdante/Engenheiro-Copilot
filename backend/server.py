@@ -18,8 +18,8 @@ from typing import Optional
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -28,7 +28,14 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import ai  # noqa: E402  (precisa do .env carregado)
+import auth_tokens  # noqa: E402
 import db  # noqa: E402
+import analise  # noqa: E402
+import yolo  # noqa: E402
+import demo_laudo_ufsc  # noqa: E402
+import demo_obras_reais  # noqa: E402
+import assistente  # noqa: E402
+import emailer  # noqa: E402
 import integrations  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -42,7 +49,7 @@ JWT_ALG = "HS256"
 JWT_EXP_HOURS = int(os.environ.get("JWT_EXP_HOURS", 24 * 7))
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 SEED_DEMO = os.environ.get("SEED_DEMO", "true").lower() in ("1", "true", "yes")
-
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 # ====================== HELPERS ======================
 def uid() -> str:
@@ -74,13 +81,19 @@ def make_token(user_id: str) -> str:
 
 
 def public_user(u: dict) -> dict:
-    return {k: v for k, v in u.items() if k != "password_hash"}
+    out = {k: v for k, v in u.items() if k != "password_hash"}
+    out["email_verified"] = bool(u.get("email_verified_at"))
+    return out
 
 
 security = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+    x_obra_id: Optional[str] = Header(default=None),
+) -> dict:
+    """Usuário autenticado. A obra ativa vem do cabeçalho X-Obra-Id (obra escolhida no app)."""
     if not creds:
         raise HTTPException(401, "Não autenticado")
     try:
@@ -92,13 +105,26 @@ async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(securit
     user = db.find_one("users", "id = ?", [payload.get("sub")])
     if not user:
         raise HTTPException(401, "Usuário não encontrado")
-    return public_user(user)
+    user = public_user(user)
+    if x_obra_id:
+        if not db.find_one("obras", "id = ?", [x_obra_id]):
+            raise HTTPException(404, "Obra não encontrada — selecione outra obra")
+        user["obra_id"] = x_obra_id
+    return user
 
 
 def require_obra(user: dict) -> str:
     if not user.get("obra_id"):
-        raise HTTPException(400, "Usuário sem obra vinculada")
+        raise HTTPException(400, "Nenhuma obra selecionada")
     return user["obra_id"]
+
+
+OBRA_MANAGERS = {"admin", "engenheiro", "diretor"}
+
+
+def require_manager(user: dict) -> None:
+    if user.get("role") not in OBRA_MANAGERS:
+        raise HTTPException(403, "Apenas administrador, engenheiro ou diretor podem cadastrar/editar obras")
 
 
 # ====================== MODELS ======================
@@ -116,6 +142,21 @@ class LoginReq(BaseModel):
     email: EmailStr
     password: str
 
+class DeleteAccountReq(BaseModel):
+    password: str
+
+
+class ClaimReq(BaseModel):
+    claim: str
+
+
+class ForgotPasswordReq(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordReq(BaseModel):
+    token: str
+    password: str = Field(min_length=6)
 
 class ChatReq(BaseModel):
     session_id: str
@@ -181,6 +222,42 @@ class QualityCreate(BaseModel):
     location: str = ""
     result: str
     notes: Optional[str] = None
+
+
+OBRA_SIZES = ["pequeno", "medio", "grande"]
+
+
+class ObraIn(BaseModel):
+    name: str = Field(min_length=2, description="Nome da obra")
+    address: str = Field(min_length=2, description="Localidade")
+    start_date: str = Field(description="Início (AAAA-MM-DD)")
+    end_date: str = Field(description="Término previsto (AAAA-MM-DD)")
+    progress: float = Field(ge=0, le=100, description="Estágio atual (%)")
+    company: str = Field(min_length=2, description="Empresa responsável")
+    art: str = Field(min_length=1, description="Nº da ART")
+    size: str = Field(description="Porte: pequeno, medio ou grande")
+    workers_count: int = Field(default=0, ge=0, description="Nº de funcionários")
+
+
+class ObraUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    progress: Optional[float] = Field(default=None, ge=0, le=100)
+    company: Optional[str] = None
+    art: Optional[str] = None
+    size: Optional[str] = None
+    workers_count: Optional[int] = Field(default=None, ge=0)
+    status: Optional[str] = None
+
+
+class WorkerIn(BaseModel):
+    name: str = Field(min_length=2)
+    role: str = ""
+    company: str = ""
+    sector: str = ""
+    admission_date: Optional[str] = None
 
 
 class WhatsAppSendReq(BaseModel):
@@ -257,6 +334,8 @@ def obra_facts(obra_id: Optional[str]) -> dict:
         "rdos": db.find("rdos", "obra_id = ?", [obra_id], limit=5),
         "checklists_open": db.find("checklists", "obra_id = ? AND status != 'concluido'", [obra_id], limit=20),
         "epi_alerts": [e for e in (epi_with_expiry(x) for x in db.find("epis", "obra_id = ?", [obra_id], limit=5000)) if e["alert"]],
+        "quality_recent": db.find("quality", "obra_id = ?", [obra_id], limit=6),
+        "workers_registered": db.count("workers", "obra_id = ?", [obra_id]),
     }
 
 
@@ -264,7 +343,10 @@ def copilot_context(f: dict) -> str:
     if not f:
         return ""
     obra, k = f.get("obra") or {}, f.get("kpis", {})
-    ctx = (f"[CONTEXTO DA OBRA]\nObra: {obra.get('name', 'N/A')}\nEndereço: {obra.get('address', 'N/A')}\n"
+    ctx = (f"[CONTEXTO DA OBRA]\nObra: {obra.get('name', 'N/A')}\nLocalidade: {obra.get('address', 'N/A')}\n"
+           f"Empresa responsável: {obra.get('company') or 'N/A'} | ART: {obra.get('art') or 'N/A'} | Porte: {obra.get('size') or 'N/A'}\n"
+           f"Início: {obra.get('start_date') or 'N/A'} | Término previsto: {obra.get('end_date') or 'N/A'}\n"
+           f"Funcionários: {obra.get('workers_count') or 0}\n"
            f"Avanço físico: {obra.get('progress', 0)}%\nNão conformidades abertas: {len(f['ncs'])}\n")
     ctx += "".join(f"  - [{n['severity'].upper()}] {n['title']}\n" for n in f["ncs"][:8])
     ctx += f"Checklists em andamento: {len(f['checklists_open'])}\n"
@@ -282,6 +364,9 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     if SEED_DEMO:
         seed_demo()
+        seed_demo_laudo()
+        seed_demo_obras_reais()
+    assign_missing_banners()
     logger.info("Backend pronto — banco SQLite em %s", db.DB_PATH)
     yield
 
@@ -293,33 +378,258 @@ api = APIRouter(prefix="/api")
 @api.get("/")
 @api.get("/health")
 async def health():
-    return {"status": "ok", "database": "sqlite", "ai": ai.status(), "whatsapp_api": integrations.whatsapp_configured()}
+    return {"status": "ok", "database": "sqlite", "ai": ai.status(), "yolo": yolo.status(),
+            "whatsapp_api": integrations.whatsapp_configured()}
 
 
 # ---------------------- AUTH ----------------------
+# ---------------------- E-MAILS DE CONTA ----------------------
+def link_base(request: Request) -> str:
+    """Começo dos links dos e-mails.
+
+    Se PUBLIC_BASE_URL estiver preenchido no .env, usa ele. Se estiver vazio, usa o
+    endereço que o app usou para chegar no backend: no celular é o IP do PC
+    (ex.: http://192.168.0.10:8000), então o link também abre no celular.
+    """
+    return PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+
+
+def send_verification_email(user: dict, token: str, base: str) -> None:
+    link = f"{base}/api/auth/verify-email?token={token}"
+    emailer.send_email(
+        user["email"], "Confirme seu e-mail — Engenheiro de Campo IA",
+        f"Olá, {user['name']}!\n\nPara confirmar seu e-mail, abra o link abaixo (vale por 24 horas):\n\n{link}\n\n"
+        "Se você não criou esta conta, ignore esta mensagem.",
+    )
+
+
+def send_reset_email(user: dict, token: str, base: str) -> None:
+    link = f"{base}/api/auth/reset-password?token={token}"
+    emailer.send_email(
+        user["email"], "Redefinir senha — Engenheiro de Campo IA",
+        f"Olá, {user['name']}!\n\nRecebemos um pedido para redefinir sua senha. Abra o link abaixo "
+        f"(vale por 1 hora e só pode ser usado uma vez):\n\n{link}\n\n"
+        "Se não foi você, ignore este e-mail: sua senha continua a mesma.",
+    )
+
+
+def send_new_login_email(user: dict, ip: str, user_agent: str) -> None:
+    quando = datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y às %H:%M")
+    emailer.send_email(
+        user["email"], "Novo acesso à sua conta — Engenheiro de Campo IA",
+        f"Olá, {user['name']}!\n\nSua conta foi acessada de um aparelho novo.\n\n"
+        f"Quando: {quando} (horário de Brasília)\nIP: {ip}\nAparelho/navegador: {user_agent}\n\n"
+        "Se foi você, pode ignorar este e-mail. Se não foi, troque sua senha agora "
+        "usando a opção \"Esqueci minha senha\" no app.",
+    )
+
+
+def record_login(user: dict, request: Request, background: BackgroundTasks) -> None:
+    """Salva o login no histórico e avisa por e-mail se o aparelho (IP + navegador) for novo."""
+    ip = request.client.host if request.client else "desconhecido"
+    user_agent = (request.headers.get("user-agent") or "desconhecido")[:300]
+    ja_visto = db.count("login_events", "user_id = ? AND ip = ? AND user_agent = ?", [user["id"], ip, user_agent]) > 0
+    db.insert("login_events", {"user_id": user["id"], "ip": ip, "user_agent": user_agent, "created_at": now_iso()})
+    if not ja_visto:
+        background.add_task(send_new_login_email, user, ip, user_agent)
+
+
+# Rotas com "def" (sem async): o FastAPI roda cada uma numa thread separada, então
+# a consulta ao DNS, o bcrypt e o SQLite não travam as outras requisições.
 @api.post("/auth/register")
-async def register(req: RegisterReq):
+def register(req: RegisterReq, request: Request, background: BackgroundTasks):
     if req.role not in ROLES:
         raise HTTPException(400, f"Cargo inválido. Use: {', '.join(ROLES)}")
     email = req.email.lower()
     if db.find_one("users", "email = ?", [email]):
         raise HTTPException(400, "E-mail já cadastrado")
-    obra = db.find("obras", order="created_at ASC", limit=1)
-    user = {
-        "id": uid(), "name": req.name.strip(), "email": email, "password_hash": hash_pw(req.password),
-        "role": req.role, "obra_id": obra[0]["id"] if obra else None, "created_at": now_iso(),
+    if not emailer.email_domain_exists(email):
+        raise HTTPException(400, f"O domínio \"{email.split('@')[1]}\" não recebe e-mails. Confira se digitou certo.")
+    # A conta NÃO é criada aqui: só guardamos o pedido. Ela nasce quando a pessoa
+    # abre o link do e-mail (rota /auth/verify-email).
+    name = req.name.strip()
+    token, claim = auth_tokens.create_pending(name, email, hash_pw(req.password), req.role)
+    # BackgroundTasks: o e-mail é enviado DEPOIS da resposta, o app não fica esperando o SMTP
+    background.add_task(send_verification_email, {"name": name, "email": email}, token, link_base(request))
+    return {
+        "pending": True,
+        "email": email,
+        "claim": claim,  # código de espera: o app usa em /auth/register/status para entrar sozinho
+        "message": f"Enviamos um link de confirmação para {email}. Sua conta só é criada depois que você "
+                   "abrir esse link (vale por 24 horas). Confira também a caixa de spam.",
     }
-    db.insert("users", user)
-    return {"token": make_token(user["id"]), "user": public_user(user)}
 
 
 @api.post("/auth/login")
-async def login(req: LoginReq):
+def login(req: LoginReq, request: Request, background: BackgroundTasks):
     u = db.find_one("users", "email = ?", [req.email.lower()])
     if not u or not verify_pw(req.password, u["password_hash"]):
-        raise HTTPException(401, "E-mail ou senha incorretos")
+        # Mesma mensagem em todos os casos: não revela se o e-mail tem conta ou cadastro pendente
+        raise HTTPException(401, "E-mail ou senha incorretos.")
+    if not u.get("email_verified_at"):
+        # Conta criada antes da confirmação obrigatória: manda um link novo e não deixa entrar.
+        # (JSONResponse com background: com HTTPException a tarefa de envio seria descartada.)
+        auth_tokens.invalidate_all(u["id"], "verificacao_email")
+        background.add_task(send_verification_email, u, auth_tokens.create(u["id"], "verificacao_email"), link_base(request))
+        return JSONResponse(status_code=403, background=background, content={
+            "detail": f"Confirme seu e-mail antes de entrar. Enviamos um novo link para {u['email']} (veja também o spam)."})
+    try:
+        record_login(u, request, background)
+    except Exception:
+        # O histórico é secundário: se falhar, o login continua funcionando
+        logger.exception("Não foi possível registrar o login no histórico")
     return {"token": make_token(u["id"]), "user": public_user(u)}
 
+
+@api.get("/auth/verify-email", response_class=HTMLResponse)
+def verify_email(token: str = ""):
+    invalido = html_page("Link inválido", "Este link de confirmação não é válido, já foi usado ou venceu. "
+                         "Faça o cadastro de novo no app para receber um link novo.", ok=False)
+    if not token:
+        return invalido
+
+    # 1) Cadastro novo: é aqui que a conta passa a existir
+    user_id = uid()
+    pend = auth_tokens.confirm_pending(token, user_id)
+    if pend:
+        if db.find_one("users", "email = ?", [pend["email"]]):
+            return html_page("Conta já existe", "Este e-mail já tem uma conta. É só entrar no app.")
+        obra = db.find("obras", order="created_at ASC", limit=1)
+        agora = now_iso()
+        db.insert("users", {
+            "id": user_id, "name": pend["name"], "email": pend["email"], "password_hash": pend["password_hash"],
+            "role": pend["role"], "obra_id": obra[0]["id"] if obra else None,
+            "email_verified_at": agora, "created_at": agora,
+        })
+        return html_page("Conta criada!", "Seu e-mail foi confirmado e sua conta está pronta. "
+                         "Volte para o app para acessar sua conta.")
+
+    # 2) Conta antiga, criada antes da confirmação obrigatória
+    user_id = auth_tokens.consume(token, "verificacao_email")
+    if user_id:
+        db.update("users", user_id, {"email_verified_at": now_iso()})
+        return html_page("E-mail confirmado!", "Pronto, seu e-mail foi confirmado. Volte para o app e entre.")
+    return invalido
+
+
+@api.post("/auth/register/status")
+def register_status(req: ClaimReq):
+    """O app chama a cada poucos segundos depois do cadastro. Quando a pessoa abre o
+    link do e-mail, responde com o login pronto, e o app entra sozinho."""
+    status, user_id = auth_tokens.claim_pending(req.claim)
+    if status == "invalido":
+        raise HTTPException(404, "Cadastro não encontrado ou vencido. Faça o cadastro de novo.")
+    if status == "aguardando":
+        return {"confirmed": False}
+    u = db.find_one("users", "id = ?", [user_id])
+    return {"confirmed": True, "token": make_token(user_id), "user": public_user(u)}
+
+
+@api.post("/auth/delete-account")
+def delete_account(req: DeleteAccountReq, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Exclui a conta de quem está logado. Pede a senha de novo, para ninguém apagar a
+    conta de outra pessoa só porque pegou o celular dela desbloqueado."""
+    if user["email"].endswith("@demo.com"):
+        raise HTTPException(400, "Contas de demonstração não podem ser excluídas.")
+    u = db.find_one("users", "id = ?", [user["id"]])
+    # 400 e não 401: no app, 401 significa "sessão expirada" e desloga a pessoa
+    if not u or not verify_pw(req.password, u["password_hash"]):
+        raise HTTPException(400, "Senha incorreta.")
+    db.delete_account(u["id"], u["email"])
+    background.add_task(emailer.send_email, u["email"], "Sua conta foi excluída — Engenheiro de Campo IA",
+                        f"Olá, {u['name']}!\n\nSua conta e seus dados pessoais foram excluídos, como você pediu. "
+                        "Os registros da obra que você criou continuam lá, sem o seu nome.\n\n"
+                        "Se não foi você, entre em contato com o administrador da obra.")
+    return {"ok": True, "message": "Sua conta foi excluída."}
+
+
+@api.post("/auth/resend-verification")
+def resend_verification(request: Request, background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    if user.get("email_verified"):
+        return {"ok": True, "message": "Seu e-mail já está confirmado."}
+    auth_tokens.invalidate_all(user["id"], "verificacao_email")  # só o link mais novo vale
+    background.add_task(send_verification_email, user, auth_tokens.create(user["id"], "verificacao_email"), link_base(request))
+    return {"ok": True, "message": "Enviamos um novo link de confirmação."}
+
+
+FORGOT_MSG = "Se este e-mail estiver cadastrado, você vai receber um link para redefinir a senha."
+
+
+@api.post("/auth/forgot-password")
+def forgot_password(req: ForgotPasswordReq, request: Request, background: BackgroundTasks):
+    u = db.find_one("users", "email = ?", [req.email.lower()])
+    if u:
+        auth_tokens.invalidate_all(u["id"], "reset_senha")
+        background.add_task(send_reset_email, u, auth_tokens.create(u["id"], "reset_senha"), link_base(request))
+    # Mesma resposta exista ou não o e-mail: assim ninguém usa esta rota
+    # para descobrir quem tem conta no sistema.
+    return {"ok": True, "message": FORGOT_MSG}
+
+
+@api.get("/auth/reset-password", response_class=HTMLResponse)
+def reset_password_page():
+    return html_page("Nova senha", RESET_FORM, raw=True)
+
+
+@api.post("/auth/reset-password")
+def reset_password(req: ResetPasswordReq, background: BackgroundTasks):
+    user_id = auth_tokens.consume(req.token, "reset_senha")
+    if not user_id:
+        raise HTTPException(400, "Link inválido, já usado ou vencido. Peça um novo em \"Esqueci minha senha\".")
+    db.update("users", user_id, {"password_hash": hash_pw(req.password)})
+    auth_tokens.invalidate_all(user_id, "reset_senha")
+    u = db.find_one("users", "id = ?", [user_id])
+    if not u.get("email_verified_at"):
+        # abrir o link do e-mail também prova que o e-mail é dela
+        db.update("users", user_id, {"email_verified_at": now_iso()})
+    background.add_task(emailer.send_email, u["email"], "Sua senha foi alterada — Engenheiro de Campo IA",
+                        f"Olá, {u['name']}!\n\nA senha da sua conta acabou de ser alterada. "
+                        "Se não foi você, entre em contato com o administrador da obra.")
+    return {"ok": True, "message": "Senha alterada! Já pode entrar no app com a senha nova."}
+
+
+# ---------------------- PÁGINAS HTML (abertas pelos links do e-mail) ----------------------
+def html_page(title: str, body: str, ok: bool = True, raw: bool = False) -> str:
+    import html as _html
+    content = body if raw else f"<p>{_html.escape(body)}</p>"
+    color = "#FF5E00" if ok else "#C62828"
+    return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{_html.escape(title)}</title>
+<style>body{{font-family:system-ui,sans-serif;background:#fff;color:#111;margin:0;padding:24px}}
+.box{{max-width:420px;margin:40px auto;border:2px solid #111;padding:24px}}
+h1{{margin:0 0 12px;border-left:8px solid {color};padding-left:12px}}
+input{{width:100%;box-sizing:border-box;border:2px solid #111;padding:12px;font-size:16px;margin:6px 0 14px}}
+button{{width:100%;background:#FF5E00;color:#fff;border:2px solid #111;padding:14px;font-weight:800;font-size:16px;cursor:pointer}}
+#msg{{margin-top:14px;font-weight:600}}</style></head>
+<body><div class="box"><h1>{_html.escape(title)}</h1>{content}</div></body></html>"""
+
+
+RESET_FORM = """
+<p>Digite sua nova senha (mínimo 6 caracteres).</p>
+<form id="f">
+  <input id="p1" type="password" placeholder="Nova senha" minlength="6" required>
+  <input id="p2" type="password" placeholder="Repita a nova senha" minlength="6" required>
+  <button type="submit">SALVAR NOVA SENHA</button>
+</form>
+<div id="msg"></div>
+<script>
+  // O token vem no link (?token=...). Lemos pelo JavaScript em vez de colar no HTML.
+  const token = new URLSearchParams(location.search).get("token") || "";
+  const msg = document.getElementById("msg");
+  document.getElementById("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const p1 = document.getElementById("p1").value, p2 = document.getElementById("p2").value;
+    if (p1 !== p2) { msg.textContent = "As senhas não são iguais."; return; }
+    const r = await fetch("/api/auth/reset-password", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({token, password: p1})
+    });
+    const data = await r.json().catch(() => ({}));
+    msg.textContent = r.ok ? data.message : (data.detail?.[0]?.msg || data.detail || "Erro ao salvar.");
+    if (r.ok) document.getElementById("f").remove();
+  });
+</script>
+"""
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
@@ -335,16 +645,11 @@ async def copilot_chat(req: ChatReq, user: dict = Depends(get_current_user)):
     mode = "ai"
     try:
         history = db.find("chat_messages", "session_id = ? AND user_id = ?", [req.session_id, user["id"]],
-                          order="created_at ASC", limit=40)
-        system = (
-            "Você é o 'Engenheiro de Campo IA', copiloto especializado em Engenharia Civil brasileira, obras, "
-            "segurança do trabalho e almoxarifado. Responda sempre em português do Brasil, de forma técnica, "
-            "objetiva e útil para engenheiros, mestres de obra, técnicos de segurança, almoxarifes e estagiários. "
-            "Cite normas (NBR, NR-6, NR-18, NR-35) quando relevante. Use os dados da obra abaixo quando a pergunta "
-            "se referir a ela e nunca invente dados que não estejam no contexto. Seja conciso; use markdown.\n\n"
-            + copilot_context(facts)
-        )
+                          order="created_at DESC", limit=16)[::-1]  # últimas 16 mensagens (limite do plano gratuito)
+        system = assistente.system_prompt(user, facts)
         msgs = [{"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant")]
+        while msgs and msgs[0]["role"] != "user":  # a conversa precisa começar pelo usuário
+            msgs.pop(0)
         reply_text = ai.chat(system, msgs)
     except ai.AIUnavailable as exc:
         logger.info("Copiloto em modo local: %s", exc)
@@ -354,6 +659,32 @@ async def copilot_chat(req: ChatReq, user: dict = Depends(get_current_user)):
            "content": reply_text, "created_at": now_iso()}
     db.insert("chat_messages", msg)
     return {"message": reply_text, "id": msg["id"], "mode": mode}
+
+
+@api.post("/copilot/transcribe")
+async def copilot_transcribe(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Microfone do copiloto: áudio → texto (Groq Whisper large-v3)."""
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Áudio vazio")
+    if len(contents) > MAX_UPLOAD:
+        raise HTTPException(413, "Áudio maior que 25 MB")
+    suffix = Path(file.filename or "audio.m4a").suffix or ".m4a"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+    try:
+        text = ai.transcribe(tmp_path, file.filename or f"audio{suffix}")
+    except ai.AIUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    if not text:
+        raise HTTPException(422, "Não foi possível entender o áudio — fale mais perto do microfone")
+    return {"text": text}
 
 
 @api.get("/copilot/history/{session_id}")
@@ -649,9 +980,518 @@ async def alerts_list(user: dict = Depends(get_current_user)):
     return {"items": compute_alerts(user.get("obra_id"))}
 
 
+# ---------------------- OBRAS ----------------------
+def _parse_date(value: str, label: str) -> str:
+    v = (value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(v, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise HTTPException(422, f"{label} inválida — use DD/MM/AAAA")
+
+
+def _validate_obra(data: dict) -> dict:
+    if "start_date" in data:
+        data["start_date"] = _parse_date(data["start_date"], "Data de início")
+    if "end_date" in data:
+        data["end_date"] = _parse_date(data["end_date"], "Término previsto")
+    if data.get("start_date") and data.get("end_date") and data["end_date"] < data["start_date"]:
+        raise HTTPException(422, "O término previsto não pode ser antes do início")
+    if "size" in data:
+        size = (data["size"] or "").lower().replace("é", "e")
+        if size not in OBRA_SIZES:
+            raise HTTPException(422, "Porte inválido — use pequeno, médio ou grande")
+        data["size"] = size
+    for k in ("name", "address", "company", "art"):
+        if k in data and isinstance(data[k], str):
+            data[k] = data[k].strip()
+    return data
+
+
+# Banners do card "Estágio atual" (frontend/assets/images/banners/banner-obra-N.png)
+BANNER_COUNT = 8
+
+
+def random_banner() -> int:
+    return random.randint(1, BANNER_COUNT)
+
+
+def assign_missing_banners() -> None:
+    """Obras antigas (criadas antes dos banners) também ganham um banner sorteado."""
+    for o in db.find("obras", "banner IS NULL", [], limit=100000):
+        db.update("obras", o["id"], {"banner": random_banner()})
+
+
+def obra_summary(o: dict) -> dict:
+    oid = o["id"]
+    registered = db.count("workers", "obra_id = ?", [oid])
+    days_left = None
+    if o.get("end_date"):
+        try:
+            days_left = (datetime.strptime(o["end_date"], "%Y-%m-%d").date() - datetime.now(timezone.utc).date()).days
+        except ValueError:
+            pass
+    return {
+        **o,
+        "workers_registered": registered,
+        "workers_total": max(o.get("workers_count") or 0, registered),
+        "days_left": days_left,
+        "nc_open": db.count("nonconformities", "obra_id = ? AND status != 'resolvido'", [oid]),
+        "nc_critical": db.count("nonconformities", "obra_id = ? AND severity = 'critica' AND status != 'resolvido'", [oid]),
+    }
+
+
+def _get_obra(obra_id: str) -> dict:
+    o = db.find_one("obras", "id = ?", [obra_id])
+    if not o:
+        raise HTTPException(404, "Obra não encontrada")
+    return o
+
+
+# ---- Menu público: qualquer pessoa vê as obras e suas especificações (sem login) ----
+PUBLIC_OBRA_FIELDS = ("id", "kind", "name", "address", "start_date", "end_date", "progress", "company", "art", "size",
+                      "status", "created_at", "updated_at", "banner")
+
+
+def public_obra(o: dict) -> dict:
+    s = obra_summary(o)
+    out = {k: s.get(k) for k in PUBLIC_OBRA_FIELDS}
+    out["workers_total"] = s["workers_total"]
+    out["days_left"] = s["days_left"]
+    out["status"] = out.get("status") or "ativa"
+    out["kind"] = out.get("kind") or "geral"
+    an = o.get("analysis") or {}
+    if an.get("demo"):
+        out["demo"] = True
+        out["demo_fonte"] = (an.get("resultado") or {}).get("fonte")
+        out["demo_analysis"] = an  # laudo de demonstração é público (documento público da UFSC)
+    return out
+
+
+@api.get("/public/obras")
+async def public_obras(q: str = Query("", max_length=100), include_finished: bool = Query(True)):
+    where, params = "COALESCE(status,'ativa') NOT IN ('arquivada','rascunho')", []
+    if q.strip():
+        where += " AND name LIKE ? COLLATE NOCASE"
+        params.append(f"%{q.strip()}%")
+    if not include_finished:
+        where += " AND COALESCE(progress,0) < 100"
+    items = [public_obra(o) for o in db.find("obras", where, params, order="created_at DESC", limit=500)]
+    return {"items": items}
+
+
+@api.get("/public/obras/{obra_id}")
+async def public_obra_get(obra_id: str):
+    return public_obra(_get_obra(obra_id))
+
+
 @api.get("/obras")
 async def obras_list(user: dict = Depends(get_current_user)):
-    return {"items": db.find("obras", order="created_at ASC", limit=50)}
+    return {"items": [obra_summary(o) for o in db.find("obras", "COALESCE(status,'ativa') NOT IN ('arquivada','rascunho')", order="created_at DESC", limit=200)],
+            "can_manage": user.get("role") in OBRA_MANAGERS}
+
+
+@api.post("/obras")
+async def obra_create(req: ObraIn, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    data = _validate_obra(req.model_dump())
+    obra = {"id": uid(), **data, "status": "ativa", "banner": random_banner(), "created_by": user["id"], "seeded": False,
+            "created_at": now_iso(), "updated_at": now_iso()}
+    db.insert("obras", obra)
+    return obra_summary(obra)
+
+
+@api.get("/obras/{obra_id}")
+async def obra_get(obra_id: str, user: dict = Depends(get_current_user)):
+    return obra_summary(_get_obra(obra_id))
+
+
+@api.put("/obras/{obra_id}")
+async def obra_update(obra_id: str, req: ObraUpdate, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    current = _get_obra(obra_id)
+    changes = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not changes:
+        return obra_summary(current)
+    merged = _validate_obra({**{k: current.get(k) for k in ("start_date", "end_date")}, **changes})
+    changes = {k: merged[k] for k in changes}
+    changes["updated_at"] = now_iso()
+    db.update("obras", obra_id, changes)
+    return obra_summary(_get_obra(obra_id))
+
+
+@api.get("/obras/{obra_id}/workers")
+async def workers_list(obra_id: str, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    return {"items": db.find("workers", "obra_id = ?", [obra_id], order="name ASC", limit=5000)}
+
+
+def _sync_workers_count(obra_id: str) -> int:
+    n = db.count("workers", "obra_id = ?", [obra_id])
+    db.update("obras", obra_id, {"workers_count": n, "updated_at": now_iso()})
+    return n
+
+
+@api.post("/obras/{obra_id}/workers")
+async def worker_add(obra_id: str, req: WorkerIn, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    w = {"id": uid(), "obra_id": obra_id, **req.model_dump(), "created_at": now_iso()}
+    db.insert("workers", w)
+    _sync_workers_count(obra_id)
+    return w
+
+
+# ---------------------- CADASTRO COM ANÁLISE (rascunho → arquivos/fotos → análise → confirmar) ----------------------
+OBRA_KINDS = ("geral", "patologia")
+UPLOAD_DIR = db.DB_PATH.parent / "uploads"
+MAX_UPLOAD = 25 * 1024 * 1024
+DRAFT_NAME = "Nova obra (rascunho)"
+
+
+class DraftIn(BaseModel):
+    kind: str = Field(description="geral (planilhas/arquivos) ou patologia (fotos do local)")
+    name: Optional[str] = None
+
+
+def _get_draft(obra_id: str) -> dict:
+    o = _get_obra(obra_id)
+    if o.get("status") != "rascunho":
+        raise HTTPException(409, "Esta obra já foi cadastrada — use a edição")
+    return o
+
+
+def _public_file(f: dict) -> dict:
+    return {k: v for k, v in f.items() if k != "path"}
+
+
+@api.get("/analise/areas")
+async def analise_areas():
+    return {"areas": [{"id": k, **v} for k, v in analise.AREAS.items()], "kinds": list(OBRA_KINDS)}
+
+
+@api.get("/analise/modelo/{area}")
+async def analise_template(area: str, user: dict = Depends(get_current_user)):
+    if area not in analise.TEMPLATES:
+        raise HTTPException(404, "Não há modelo para esta área")
+    return Response(analise.template_xlsx(area), media_type=XLSX,
+                    headers={"Content-Disposition": f'attachment; filename="modelo-{area}.xlsx"'})
+
+
+@api.post("/obras/rascunho")
+async def obra_draft_create(req: DraftIn, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    if req.kind not in OBRA_KINDS:
+        raise HTTPException(422, "Tipo inválido — use 'geral' ou 'patologia'")
+    obra = {"id": uid(), "name": (req.name or "").strip() or DRAFT_NAME, "progress": 0, "status": "rascunho",
+            "kind": req.kind, "banner": random_banner(), "created_by": user["id"], "seeded": False,
+            "created_at": now_iso(), "updated_at": now_iso()}
+    db.insert("obras", obra)
+    return obra_summary(obra)
+
+
+def _analyze_photo(content: bytes, mime: str) -> dict:
+    """Patologia por foto: Gemini Flash (ou Claude) + detector YOLO local quando houver modelo treinado."""
+    yolo_dets = yolo.detect(content)
+    base = {"type": "foto", "yolo": yolo_dets} if yolo_dets is not None else {"type": "foto"}
+    try:
+        r, provider = ai.pathology_vision_json(analise.PATOLOGIA_SYSTEM, "Analise as manifestações patológicas desta foto.",
+                                               mime or "image/jpeg", content)
+        r["status"] = "analisado"
+        r["provedor"] = provider
+        r.setdefault("manifestacoes", [])
+        for m in r["manifestacoes"]:
+            m["gut"] = analise.gut(m)
+        return {**base, **r}
+    except ai.AIUnavailable as exc:
+        return {**base, "status": "pendente", "manifestacoes": [], "requires_human_validation": True,
+                "summary": f"Foto registrada. Análise automática indisponível: {exc}"}
+    except ValueError:
+        return {**base, "status": "pendente", "manifestacoes": [], "requires_human_validation": True,
+                "summary": "Resposta da IA ilegível — validação humana necessária."}
+
+
+class ValidacaoItem(BaseModel):
+    index: int = Field(ge=0)
+    status: str = Field(description="confirmada | rejeitada")
+    tipo: Optional[str] = Field(default=None, description="classe corrigida pelo técnico (opcional)")
+
+
+class ValidacaoIn(BaseModel):
+    itens: list[ValidacaoItem]
+
+
+@api.put("/obras/{obra_id}/arquivos/{file_id}/validacao")
+async def obra_file_validate(obra_id: str, file_id: str, req: ValidacaoIn, user: dict = Depends(get_current_user)):
+    """Validação humana de cada manifestação de uma foto (alimenta o dataset do YOLO)."""
+    require_manager(user)
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f or f["category"] != analise.PHOTO_CATEGORY:
+        raise HTTPException(404, "Foto não encontrada")
+    ex = f.get("extracted") or {}
+    n = len(ex.get("manifestacoes") or [])
+    val = ex.get("validacao") or {}
+    for it in req.itens:
+        if it.index >= n:
+            raise HTTPException(422, f"Manifestação {it.index} não existe nesta foto")
+        if it.status not in ("confirmada", "rejeitada"):
+            raise HTTPException(422, "status deve ser 'confirmada' ou 'rejeitada'")
+        val[str(it.index)] = {"status": it.status, "tipo": it.tipo, "por": user["name"], "em": now_iso()}
+    ex["validacao"] = val
+    db.update("obra_files", file_id, {"extracted": ex})
+    return _public_file({**f, "extracted": ex})
+
+
+@api.get("/analise/dataset/yolo")
+async def yolo_dataset_export(user: dict = Depends(get_current_user)):
+    """Exporta as fotos com manifestações CONFIRMADAS no formato YOLO (só administrador)."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas o administrador pode exportar o dataset")
+    items = []
+    for f in db.find("obra_files", "category = ?", [analise.PHOTO_CATEGORY], order="created_at ASC", limit=100000):
+        path = UPLOAD_DIR / f["path"]
+        if path.exists() and (f.get("extracted") or {}).get("validacao"):
+            items.append((f"{f['id']}{path.suffix}", path.read_bytes(), f["extracted"]))
+    content, stats = yolo.build_dataset_zip(items)
+    if not stats["imagens"]:
+        raise HTTPException(404, "Ainda não há fotos com manifestações confirmadas para exportar")
+    return Response(content, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="dataset-patologias-{today()}.zip"',
+        "X-Dataset-Imagens": str(stats["imagens"]), "X-Dataset-Rotulos": str(stats["rotulos"])})
+
+
+@api.get("/analise/dataset/status")
+async def yolo_dataset_status(user: dict = Depends(get_current_user)):
+    fotos = db.find("obra_files", "category = ?", [analise.PHOTO_CATEGORY], limit=100000)
+    conf = rej = pend = 0
+    por_classe: dict[str, int] = {}
+    for f in fotos:
+        ex = f.get("extracted") or {}
+        val = ex.get("validacao") or {}
+        for i, m in enumerate(ex.get("manifestacoes") or []):
+            st = (val.get(str(i)) or {}).get("status")
+            if st == "confirmada":
+                conf += 1
+                c = yolo.CLASSES[yolo.class_index((val[str(i)].get("tipo") or m.get("tipo")))]
+                por_classe[c] = por_classe.get(c, 0) + 1
+            elif st == "rejeitada":
+                rej += 1
+            else:
+                pend += 1
+    return {"fotos": len(fotos), "confirmadas": conf, "rejeitadas": rej, "aguardando_validacao": pend,
+            "por_classe": por_classe, "yolo": yolo.status()}
+
+
+@api.post("/obras/{obra_id}/arquivos")
+async def obra_file_upload(obra_id: str, category: str = Query(...), file: UploadFile = File(...),
+                           user: dict = Depends(get_current_user)):
+    require_manager(user)
+    _get_obra(obra_id)
+    if category not in analise.ALL_CATEGORIES:
+        raise HTTPException(422, f"Categoria inválida. Use: {', '.join(sorted(analise.ALL_CATEGORIES))}")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Arquivo vazio")
+    if len(content) > MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo maior que 25 MB")
+    filename = Path(file.filename or "arquivo").name
+    kind = analise.file_kind(filename)
+    if category == analise.PHOTO_CATEGORY and kind != "imagem":
+        raise HTTPException(422, "Envie uma imagem (JPG/PNG) para a análise de patologia")
+    fid = uid()
+    ext = Path(filename).suffix.lower()[:10]
+    rel = f"{obra_id}/{fid}{ext}"
+    dest = UPLOAD_DIR / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    if category == analise.PHOTO_CATEGORY:
+        extracted = _analyze_photo(content, file.content_type or "image/jpeg")
+    else:
+        extracted = analise.analyze_file(content, filename, category)
+    rec = {"id": fid, "obra_id": obra_id, "category": category, "filename": filename, "mime": file.content_type,
+           "size": len(content), "path": rel, "kind": kind, "extracted": extracted, "user_id": user["id"],
+           "created_at": now_iso()}
+    db.insert("obra_files", rec)
+    return _public_file(rec)
+
+
+@api.get("/obras/{obra_id}/arquivos")
+async def obra_files_list(obra_id: str, user: dict = Depends(get_current_user)):
+    _get_obra(obra_id)
+    return {"items": [_public_file(f) for f in db.find("obra_files", "obra_id = ?", [obra_id], order="created_at ASC", limit=1000)]}
+
+
+@api.get("/obras/{obra_id}/arquivos/{file_id}/download")
+async def obra_file_download(obra_id: str, file_id: str, user: dict = Depends(get_current_user)):
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f or not (UPLOAD_DIR / f["path"]).exists():
+        raise HTTPException(404, "Arquivo não encontrado")
+    return FileResponse(UPLOAD_DIR / f["path"], filename=f["filename"], media_type=f.get("mime") or "application/octet-stream")
+
+
+@api.delete("/obras/{obra_id}/arquivos/{file_id}")
+async def obra_file_delete(obra_id: str, file_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    f = db.find_one("obra_files", "id = ? AND obra_id = ?", [file_id, obra_id])
+    if not f:
+        raise HTTPException(404, "Arquivo não encontrado")
+    try:
+        (UPLOAD_DIR / f["path"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    with db._lock, db.connect() as conn:
+        conn.execute("DELETE FROM obra_files WHERE id = ?", [file_id])
+    return {"ok": True}
+
+
+def _import_people_from_files(obra_id: str, files: list[dict]) -> int:
+    """Funcionários das planilhas da área 'pessoas' viram o cadastro de funcionários da obra."""
+    people = []
+    for f in files:
+        if f["category"] != "pessoas" or f.get("kind") != "planilha" or f["filename"].lower().endswith(".csv"):
+            continue
+        try:
+            recs, _ = integrations.parse_workers_sheet((UPLOAD_DIR / f["path"]).read_bytes())
+            people += recs
+        except Exception:
+            continue
+    if not people:
+        return 0
+    with db._lock, db.connect() as conn:
+        conn.execute("DELETE FROM workers WHERE obra_id = ?", [obra_id])
+    for r in people:
+        db.insert("workers", {"id": uid(), "obra_id": obra_id, "created_at": now_iso(), **r})
+    return _sync_workers_count(obra_id)
+
+
+@api.post("/obras/{obra_id}/analisar")
+async def obra_analyze(obra_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    obra = _get_obra(obra_id)
+    files = db.find("obra_files", "obra_id = ?", [obra_id], order="created_at ASC", limit=1000)
+    kind = obra.get("kind") or "geral"
+    if kind == "patologia":
+        photos = [f.get("extracted") or {} for f in files if f["category"] == analise.PHOTO_CATEGORY]
+        if not photos:
+            raise HTTPException(422, "Envie pelo menos uma foto do local para analisar")
+        result = analise.consolidate_patologia(photos)
+        local = analise.local_parecer_patologia(result)
+        suggested: dict = {}
+    else:
+        if not [f for f in files if f["category"] != analise.PHOTO_CATEGORY]:
+            raise HTTPException(422, "Anexe pelo menos uma planilha ou arquivo da obra para analisar")
+        result = analise.consolidate_geral(files)
+        local = analise.local_parecer_geral(result)
+        suggested = dict(result["campos_sugeridos"])
+        imported = _import_people_from_files(obra_id, files)
+        if imported:
+            suggested["workers_count"] = imported
+            result["funcionarios_importados"] = imported
+
+    # Parecer: IA quando configurada, senão o parecer local (baseado só nos dados lidos)
+    parecer, mode = local, "local"
+    try:
+        import json as _json
+        compact = _json.dumps({k: v for k, v in result.items() if k != "manifestacoes"}, ensure_ascii=False)[:12000]
+        parecer = ai.chat(
+            "Você é engenheiro civil sênior. Escreva um parecer técnico curto (máx. 12 linhas, português do Brasil, markdown) "
+            "sobre o cadastro desta obra, usando SOMENTE os dados fornecidos. Aponte riscos, pendências e próximos passos. "
+            "Não invente números.",
+            [{"role": "user", "content": f"Tipo: {kind}\nDados extraídos: {compact}"}], max_tokens=700)
+        mode = "ai"
+    except ai.AIUnavailable:
+        pass
+
+    analysis = {"kind": kind, "resultado": result, "parecer": parecer, "parecer_modo": mode,
+                "arquivos": len(files), "analisado_em": now_iso(), "analisado_por": user["name"]}
+    changes: dict = {"analysis": analysis, "updated_at": now_iso()}
+    # preenche só campos vazios do rascunho com o que foi encontrado nos arquivos
+    if obra.get("status") == "rascunho":
+        for k in ("name", "address", "start_date", "end_date", "progress", "company", "art", "size", "workers_count"):
+            v = suggested.get(k)
+            if v in (None, ""):
+                continue
+            empty = obra.get(k) in (None, "", 0) or (k == "name" and obra.get("name") == DRAFT_NAME)
+            if empty:
+                changes[k] = v
+    db.update("obras", obra_id, changes)
+    return {"analysis": analysis, "sugeridos": suggested, "obra": obra_summary(_get_obra(obra_id))}
+
+
+@api.post("/obras/{obra_id}/confirmar")
+async def obra_confirm(obra_id: str, user: dict = Depends(get_current_user)):
+    require_manager(user)
+    o = _get_draft(obra_id)
+    missing = [label for k, label in (("address", "localidade"), ("start_date", "início"), ("end_date", "término previsto"),
+                                      ("company", "empresa responsável"), ("art", "ART"), ("size", "porte"))
+               if not o.get(k)]
+    if not o.get("name") or o["name"] == DRAFT_NAME:
+        missing.insert(0, "nome da obra")
+    if missing:
+        raise HTTPException(422, "Complete antes de cadastrar: " + ", ".join(missing))
+    db.update("obras", obra_id, {"status": "ativa", "updated_at": now_iso()})
+    return obra_summary(_get_obra(obra_id))
+
+
+# Tabelas com dados ligados a uma obra (apagadas junto na exclusão definitiva)
+OBRA_DATA_TABLES = ("obra_files", "workers", "rdos", "photos", "inspections", "checklists",
+                    "nonconformities", "epis", "quality")
+
+
+def _purge_obra(obra_id: str) -> dict:
+    """Apaga a obra, todos os registros ligados a ela e os arquivos enviados. Devolve a contagem apagada."""
+    import shutil
+    counts: dict[str, int] = {}
+    with db._lock, db.connect() as conn:
+        for t in OBRA_DATA_TABLES:
+            counts[t] = conn.execute(f"DELETE FROM {t} WHERE obra_id = ?", [obra_id]).rowcount
+        # usuários que tinham esta obra como padrão ficam sem obra (não são apagados)
+        counts["usuarios_desvinculados"] = conn.execute("UPDATE users SET obra_id = NULL WHERE obra_id = ?", [obra_id]).rowcount
+        conn.execute("DELETE FROM obras WHERE id = ?", [obra_id])
+    shutil.rmtree(UPLOAD_DIR / obra_id, ignore_errors=True)
+    return counts
+
+
+@api.delete("/obras/{obra_id}")
+async def obra_delete(obra_id: str, confirm: str = Query("", description="Nome exato da obra (obrigatório para obras cadastradas)"),
+                      user: dict = Depends(get_current_user)):
+    """• Rascunho: cancela o cadastro (administrador, engenheiro ou diretor).
+    • Obra cadastrada: exclusão DEFINITIVA, só administrador, confirmando com o nome exato da obra."""
+    o = _get_obra(obra_id)
+    if o.get("status") == "rascunho":
+        require_manager(user)
+        _purge_obra(obra_id)
+        return {"ok": True, "rascunho": True}
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas o administrador pode excluir uma obra")
+    if confirm.strip() != (o.get("name") or "").strip():
+        raise HTTPException(422, "Para excluir, digite o nome exato da obra")
+    counts = _purge_obra(obra_id)
+    # registro de auditoria (fica mesmo depois da obra ser apagada)
+    db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": user["id"], "channel": "exclusao_obra",
+                                   "status": "excluida", "created_at": now_iso(),
+                                   "payload": {"obra": o.get("name"), "art": o.get("art"), "por": user.get("email"), "apagados": counts}})
+    logger.warning("Obra '%s' (%s) excluída por %s — %s", o.get("name"), obra_id, user.get("email"), counts)
+    return {"ok": True, "obra": o.get("name"), "apagados": counts}
+
+
+@api.post("/obras/{obra_id}/workers/import")
+async def workers_import(obra_id: str, file: UploadFile = File(...), replace: bool = Query(False),
+                         user: dict = Depends(get_current_user)):
+    require_manager(user)
+    _get_obra(obra_id)
+    content = await file.read()
+    try:
+        records, errors = integrations.parse_workers_sheet(content)
+    except Exception as exc:
+        raise HTTPException(400, f"Não foi possível ler a planilha: {exc}")
+    if replace:
+        with db._lock, db.connect() as conn:
+            conn.execute("DELETE FROM workers WHERE obra_id = ?", [obra_id])
+    for r in records:
+        db.insert("workers", {"id": uid(), "obra_id": obra_id, "created_at": now_iso(), **r})
+    total = _sync_workers_count(obra_id)
+    return {"imported": len(records), "total": total, "errors": errors}
 
 
 # ---------------------- INTEGRAÇÕES ----------------------
@@ -676,6 +1516,12 @@ async def excel_export(user: dict = Depends(get_current_user)):
     content = integrations.build_workbook(rows, obra.get("name", ""))
     fname = f"obra-{today()}.xlsx"
     return Response(content, media_type=XLSX, headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@api.get("/integrations/excel/workers-template")
+async def excel_workers_template(user: dict = Depends(get_current_user)):
+    return Response(integrations.workers_template(), media_type=XLSX,
+                    headers={"Content-Disposition": 'attachment; filename="modelo-funcionarios.xlsx"'})
 
 
 @api.get("/integrations/excel/epi-template")
@@ -736,13 +1582,22 @@ app.add_middleware(
 
 
 # ====================== SEED (dados de demonstração) ======================
+DEMO_OBRA_DETAILS = {"company": "Construtora ABC Ltda.", "art": "SP-2025-0012345", "size": "medio", "workers_count": 4,
+                     "status": "ativa"}
+
+
 def seed_demo() -> None:
-    if db.find_one("obras", "seeded = 1"):
+    existing = db.find_one("obras", "seeded = 1")
+    if existing:
+        if not existing.get("company"):  # banco da versão anterior: completa os novos campos
+            db.update("obras", existing["id"], DEMO_OBRA_DETAILS)
         return
+    if db.find_one("users", "email = ?", ["admin@demo.com"]):
+        return  # demo já foi criado antes e a obra foi excluída pelo administrador: não recriar
     obra_id = uid()
     db.insert("obras", {"id": obra_id, "name": "Residencial Vila Nova", "address": "Av. Paulista, 1500 - São Paulo/SP",
                         "progress": 62, "start_date": "2025-08-01", "end_date": "2026-12-15", "seeded": True,
-                        "created_at": now_iso()})
+                        "created_at": now_iso(), **DEMO_OBRA_DETAILS})
     demo_pw = os.environ.get("DEMO_PASSWORD", "demo123")
     for name, email, role in [
         ("Administrador", "admin@demo.com", "admin"),
@@ -755,7 +1610,8 @@ def seed_demo() -> None:
     ]:
         if not db.find_one("users", "email = ?", [email]):
             db.insert("users", {"id": uid(), "name": name, "email": email, "password_hash": hash_pw(demo_pw),
-                                "role": role, "obra_id": obra_id, "created_at": now_iso()})
+                                "role": role, "obra_id": obra_id, "email_verified_at": now_iso(),
+                                "created_at": now_iso()})
     for title, desc, sev in [
         ("Falta de guarda-corpo no pavimento 5", "Ausência de proteção coletiva na periferia da laje.", "critica"),
         ("Fissuras na alvenaria do 3º andar", "Fissuras horizontais superiores a 2mm.", "alta"),
@@ -794,3 +1650,58 @@ def seed_demo() -> None:
                               "service": s, "location": f"Pav {i + 1}", "result": r, "notes": "Registro de demonstração",
                               "created_at": now_iso()})
     logger.info("Dados de demonstração criados (login: engenheiro@demo.com / %s)", demo_pw)
+
+
+def seed_demo_obras_reais() -> None:
+    """4 obras REAIS de demonstração (1 patologia, 2 concluídas, 1 em andamento) — ver demo_obras_reais.py.
+    Cada uma é criada uma única vez; se o administrador excluir, não volta."""
+    def ja_criada(marker: str) -> bool:
+        return bool(db.find_one("integration_logs", "channel = 'seed' AND status = ?", [marker]))
+
+    def registrar(obra_id: str, marker: str, fonte: dict) -> None:
+        db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "channel": "seed", "status": marker,
+                                       "payload": {"fonte": fonte["url"]}, "created_at": now_iso()})
+
+    def nc(obra_id: str, n: dict, autor: str) -> None:
+        db.insert("nonconformities", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "user_name": autor,
+                                      "status": "aberta", "auto_generated": True, "created_at": now_iso(), **n})
+
+    m = demo_obras_reais
+    if not ja_criada(m.HUOP_MARKER):
+        oid = uid()
+        db.insert("obras", {"id": oid, **m.HUOP_OBRA, "status": "ativa", "seeded": False, "banner": random_banner(),
+                            "created_by": m.HUOP_MARKER, "analysis": m.huop_analysis(), "created_at": now_iso(), "updated_at": now_iso()})
+        for n in m.huop_ncs():
+            nc(oid, n, "Simulação (estudo UTFPR)")
+        registrar(oid, m.HUOP_MARKER, m.HUOP_FONTE)
+    for marker, d in m.GERAIS:
+        if ja_criada(marker):
+            continue
+        oid = uid()
+        db.insert("obras", {"id": oid, **d["obra"], "status": "ativa", "seeded": False, "banner": random_banner(),
+                            "created_by": marker, "analysis": d["analysis"], "created_at": now_iso(), "updated_at": now_iso()})
+        for n in d.get("ncs", []):
+            nc(oid, n, "Simulação (dados públicos)")
+        for date_, txt, weather in d.get("rdos", []):
+            db.insert("rdos", {"id": uid(), "obra_id": oid, "user_id": "seed", "user_name": "Simulação (dados públicos)", "text": txt,
+                               "weather": weather, "workers_count": None, "activities": [], "date": date_, "created_at": now_iso()})
+        registrar(oid, marker, d["analysis"]["resultado"]["fonte"])
+    logger.info("Obras reais de demonstração verificadas (HUOP, Ponte Hercílio Luz, Museu do Ipiranga, Linha 6-Laranja)")
+
+
+def seed_demo_laudo() -> None:
+    """Obra de demonstração de patologia (laudo real da UFSC). Criada uma única vez;
+    se o administrador a excluir, não volta."""
+    if db.find_one("integration_logs", "channel = 'seed' AND status = ?", [demo_laudo_ufsc.DEMO_MARKER]):
+        return
+    obra_id = uid()
+    db.insert("obras", {"id": obra_id, **demo_laudo_ufsc.OBRA, "status": "ativa", "seeded": False,
+                        "created_by": demo_laudo_ufsc.DEMO_MARKER, "analysis": demo_laudo_ufsc.analysis(),
+                        "created_at": now_iso(), "updated_at": now_iso()})
+    for n in demo_laudo_ufsc.ncs():
+        db.insert("nonconformities", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "user_name": "Simulação (laudo UFSC)",
+                                      "status": "aberta", "auto_generated": True, "created_at": now_iso(), **n})
+    db.insert("integration_logs", {"id": uid(), "obra_id": obra_id, "user_id": "seed", "channel": "seed",
+                                   "status": demo_laudo_ufsc.DEMO_MARKER, "payload": {"fonte": demo_laudo_ufsc.FONTE["url"]},
+                                   "created_at": now_iso()})
+    logger.info("Obra de demonstração de patologia criada (laudo UFSC CSE Bloco C)")

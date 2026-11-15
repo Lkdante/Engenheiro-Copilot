@@ -5,9 +5,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useAudioRecorder, requestRecordingPermissionsAsync, RecordingPresets } from "expo-audio";
 import { api, fileForm } from "@/src/api";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function RDOScreen() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [recording, setRecording] = useState(false);
@@ -20,11 +24,11 @@ export default function RDOScreen() {
   const startRec = async () => {
     try {
       const perm = await requestRecordingPermissionsAsync();
-      if (!perm.granted) { Alert.alert("Permissão", "Permita o microfone"); return; }
+      if (!perm.granted) { notifyError("Permissão", "Permita o microfone"); return; }
       await recorder.prepareToRecordAsync();
       recorder.record();
       setRecording(true);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
   };
 
   const stopRec = async () => {
@@ -33,7 +37,7 @@ export default function RDOScreen() {
       setRecording(false);
       const u = recorder.uri;
       setUri(u || null);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
   };
 
   const transcribe = async () => {
@@ -46,7 +50,7 @@ export default function RDOScreen() {
       setTranscript(data.transcript || "");
       setStructured(data.structured || null);
     } catch (e: any) {
-      Alert.alert("Transcrição indisponível", `${e?.message || e}\n\nVocê pode digitar o RDO manualmente.`);
+      notifyError("Transcrição indisponível", `${e?.message || e}\n\nVocê pode digitar o RDO manualmente.`);
       setManual(true);
     }
     finally { setBusy(false); }
@@ -54,7 +58,7 @@ export default function RDOScreen() {
 
   const save = async () => {
     const text = (transcript || structured?.text || "").trim();
-    if (!text) return Alert.alert("RDO", "Escreva ou grave o relato do dia antes de salvar.");
+    if (!text) return notifyError("RDO", "Escreva ou grave o relato do dia antes de salvar.");
     setBusy(true);
     try {
       await api("/rdo", { method: "POST", body: {
@@ -64,9 +68,8 @@ export default function RDOScreen() {
         weather: structured?.weather,
         workers_count: structured?.workers_count,
       }});
-      Alert.alert("RDO salvo", "Relatório registrado com sucesso");
       router.back();
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -136,7 +139,7 @@ export default function RDOScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   back: { width: 40, height: 40, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
@@ -158,4 +161,4 @@ const styles = StyleSheet.create({
   metaBlock: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surfaceSecondary, gap: 4 },
   metaLine: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurface, fontWeight: "700" },
   metaSub: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurfaceSecondary, marginLeft: spacing.sm },
-});
+}));

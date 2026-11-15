@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { useCallback, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { clearAuth, getStoredUser } from "@/src/api";
-import { colors, spacing, fonts, fontSize, roleLabel } from "@/src/theme";
+import { useFocusEffect, useRouter } from "expo-router";
+import { api, clearAuth, getActiveObra, getStoredUser, type ObraRef } from "@/src/api";
+import { spacing, fonts, fontSize, roleLabel } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
+import { notify } from "@/src/notify";
 
 const MENU: { id: string; title: string; sub: string; icon: any; route: string }[] = [
+  { id: "conta", title: "MINHA CONTA", sub: "Dados pessoais • excluir conta", icon: "person-circle", route: "/conta" },
+  { id: "obras", title: "TROCAR DE OBRA", sub: "Voltar ao menu de obras", icon: "business", route: "/obras" },
+  { id: "config", title: "CONFIGURAÇÕES", sub: "Tema escuro • acessibilidade • privacidade", icon: "settings", route: "/configuracoes" },
   { id: "rdo", title: "RDO POR VOZ", sub: "Grave, transcreva com IA", icon: "mic", route: "/rdo" },
   { id: "photos", title: "FOTOS IA", sub: "Galeria auto-classificada", icon: "images", route: "/photos" },
   { id: "inspect", title: "INSPEÇÃO IA", sub: "Analisar foto do canteiro", icon: "scan", route: "/inspect" },
@@ -16,20 +21,45 @@ const MENU: { id: string; title: string; sub: string; icon: any; route: string }
 ];
 
 export default function Perfil() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
+  const [obra, setObra] = useState<ObraRef | null>(null);
 
-  useEffect(() => { (async () => setUser(await getStoredUser()))(); }, []);
+  useFocusEffect(useCallback(() => { (async () => { setUser(await getStoredUser()); setObra(await getActiveObra()); })(); }, []));
+
+  const [verifyMsg, setVerifyMsg] = useState("");
+  const [sending, setSending] = useState(false);
+
+  // Toda vez que a tela abre, busca o usuário atualizado (ex.: e-mail confirmado agora há pouco)
+  useFocusEffect(useCallback(() => {
+    api("/auth/me").then(setUser).catch(() => {});
+  }, []));
+
+  const resendVerification = async () => {
+    setSending(true);
+    setVerifyMsg("");
+    try {
+      const r = await api<{ message: string }>("/auth/resend-verification", { method: "POST" });
+      setVerifyMsg(r.message);
+    } catch (e: any) {
+      setVerifyMsg(e?.message || "Erro ao reenviar o link");
+    } finally {
+      setSending(false);
+    }
+  };
 
   const logout = async () => {
     await clearAuth();
-    router.replace("/(auth)/login");
+    notify({ kind: "info", title: "Você saiu da conta", message: "Entre com outro usuário quando quiser." });
+    router.replace("/obras");
   };
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.hLabel}>PERFIL & FERRAMENTAS</Text>
+        <Text style={styles.hLabel}>{obra ? `OBRA: ${obra.name.toUpperCase()}` : "PERFIL & FERRAMENTAS"}</Text>
         <Text style={styles.hTitle}>{user?.name || "—"}</Text>
       </View>
 
@@ -47,9 +77,20 @@ export default function Perfil() {
           </View>
         </View>
 
+        {user && user.email_verified === false ? (
+          <View style={styles.verifyBox} testID="verify-banner">
+            <Text style={styles.verifyTitle}>CONFIRME SEU E-MAIL</Text>
+            <Text style={styles.verifyText}>Enviamos um link para {user.email}. Abra o e-mail e toque no link para confirmar sua conta.</Text>
+            {verifyMsg ? <Text style={styles.verifyMsg}>{verifyMsg}</Text> : null}
+            <Pressable testID="verify-resend" onPress={resendVerification} style={({ pressed }) => [styles.verifyBtn, pressed && { opacity: 0.85 }]}>
+              {sending ? <ActivityIndicator color={colors.onSurface} /> : <Text style={styles.verifyBtnText}>REENVIAR LINK</Text>}
+            </Pressable>
+          </View>
+        ) : null}
+
         <Text style={styles.sectionLabel}>FERRAMENTAS</Text>
         {MENU.map((m) => (
-          <Pressable key={m.id} testID={`menu-${m.id}`} onPress={() => router.push(m.route as any)} style={({ pressed }) => [styles.item, pressed && { backgroundColor: colors.surfaceSecondary }]}>
+          <Pressable key={m.id} testID={`menu-${m.id}`} onPress={() => (m.id === "obras" ? router.replace("/obras") : router.push(m.route as any))} style={({ pressed }) => [styles.item, pressed && { backgroundColor: colors.surfaceSecondary }]}>
             <View style={styles.itemIcon}>
               <Ionicons name={m.icon} size={22} color={colors.onSurface} />
             </View>
@@ -72,12 +113,18 @@ export default function Perfil() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   hLabel: { fontFamily: fonts.mono, fontSize: fontSize.xs, letterSpacing: 1.5, color: colors.info, fontWeight: "700" },
   hTitle: { fontFamily: fonts.display, fontSize: fontSize.xl, fontWeight: "900", color: colors.onSurface, letterSpacing: -0.5, marginTop: 2 },
   scroll: { padding: spacing.lg, gap: spacing.sm, paddingBottom: spacing["2xl"] },
+  verifyBox: { borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.brandTertiary, padding: spacing.md, gap: spacing.xs },
+  verifyTitle: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1, color: colors.onSurface },
+  verifyText: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurfaceSecondary },
+  verifyMsg: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.onSurface, fontWeight: "700" },
+  verifyBtn: { marginTop: spacing.sm, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", minHeight: 44 },
+  verifyBtnText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 1, color: colors.onSurface },
   userCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surfaceInverse },
   avatar: { width: 56, height: 56, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
   userName: { fontFamily: fonts.display, fontSize: fontSize.lg, fontWeight: "900", color: colors.onSurfaceInverse, letterSpacing: -0.3 },
@@ -92,4 +139,4 @@ const styles = StyleSheet.create({
   logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, marginTop: spacing.lg, borderWidth: 2, borderColor: colors.error, padding: spacing.md, backgroundColor: colors.surface },
   logoutText: { color: colors.error, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.base, letterSpacing: 1 },
   legal: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, textAlign: "center", marginTop: spacing.xl, lineHeight: 16 },
-});
+}));

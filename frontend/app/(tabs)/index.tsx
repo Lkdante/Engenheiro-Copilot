@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from "react-native";
+import { useAudioRecorder, requestRecordingPermissionsAsync, RecordingPresets } from "expo-audio";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { api, getStoredUser, clearAuth } from "@/src/api";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { useFocusEffect, useRouter } from "expo-router";
+import { api, getStoredUser, clearAuth, getActiveObra, fileForm } from "@/src/api";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
+import { notify, notifyError } from "@/src/notify";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string; created_at?: string };
 
@@ -16,6 +19,8 @@ const QUICK = [
 ];
 
 export default function Copiloto() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -23,13 +28,68 @@ export default function Copiloto() {
   const [user, setUser] = useState<any>(null);
   const [mode, setMode] = useState<"ai" | "local" | null>(null);
   const scrollRef = useRef<ScrollView>(null);
-  const sessionId = useRef<string>(`sess-${Date.now()}`).current;
+  const sessionRef = useRef<string>(`sess-${Date.now()}`);
+  const obraRef = useRef<string | null>(null);
+  const [obraName, setObraName] = useState("");
+
+  // Ao trocar de obra, começa uma conversa nova (o contexto do copiloto é da obra ativa)
+  useFocusEffect(useCallback(() => {
+    (async () => {
+      const o = await getActiveObra();
+      setObraName(o?.name || "");
+      if (obraRef.current && o?.id !== obraRef.current) {
+        setMessages([]);
+        sessionRef.current = `sess-${Date.now()}`;
+      }
+      obraRef.current = o?.id || null;
+    })();
+  }, []));
 
   useEffect(() => { (async () => setUser(await getStoredUser()))(); }, []);
 
   const logout = async () => {
     await clearAuth();
-    router.replace("/(auth)/login");
+    notify({ kind: "info", title: "Você saiu da conta", message: "Entre com outro usuário quando quiser." });
+    router.replace("/obras");
+  };
+
+  // ---------------- voz: grava → Groq Whisper large-v3 → envia ao assistente
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+
+  const warn = (msg: string) => notifyError("Voz", msg);
+
+  const toggleMic = async () => {
+    if (transcribing || loading) return;
+    if (!recording) {
+      try {
+        const perm = await requestRecordingPermissionsAsync();
+        if (!perm.granted) return warn("Permita o uso do microfone para falar com o assistente.");
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        setRecording(true);
+      } catch (e: any) {
+        warn(String(e?.message || e));
+      }
+      return;
+    }
+    try {
+      await recorder.stop();
+      setRecording(false);
+      const uri = recorder.uri;
+      if (!uri) return;
+      setTranscribing(true);
+      const isWeb = uri.startsWith("blob:") || uri.startsWith("data:");
+      const form = await fileForm("file", uri, isWeb ? "voz.webm" : "voz.m4a", isWeb ? "audio/webm" : "audio/m4a");
+      const r = await api<{ text: string }>("/copilot/transcribe", { method: "POST", body: form, isForm: true });
+      if (r.text) await send(r.text);
+    } catch (e: any) {
+      warn(`${e?.message || e}\n\nVocê pode digitar a pergunta.`);
+    } finally {
+      setRecording(false);
+      setTranscribing(false);
+    }
   };
 
   const send = async (text?: string) => {
@@ -41,7 +101,7 @@ export default function Copiloto() {
     setLoading(true);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     try {
-      const r = await api<{ message: string; id: string; mode?: "ai" | "local" }>("/copilot/chat", { method: "POST", body: { session_id: sessionId, message: msg } });
+      const r = await api<{ message: string; id: string; mode?: "ai" | "local" }>("/copilot/chat", { method: "POST", body: { session_id: sessionRef.current, message: msg } });
       setMessages((p) => [...p, { id: r.id, role: "assistant", content: r.message }]);
       if (r.mode) setMode(r.mode);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
@@ -56,7 +116,7 @@ export default function Copiloto() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.hLabel}>COPILOTO IA</Text>
+          <Text style={styles.hLabel} numberOfLines={1}>{obraName ? `COPILOTO • ${obraName.toUpperCase()}` : "COPILOTO IA"}</Text>
           <Text style={styles.hTitle}>Olá, {user?.name?.split(" ")[0] || "Engenheiro"}</Text>
         </View>
         <View style={styles.statusDot}>
@@ -104,12 +164,21 @@ export default function Copiloto() {
             testID="copilot-input"
             value={input}
             onChangeText={setInput}
-            placeholder="Pergunte à IA..."
+            placeholder={recording ? "Gravando… toque ■ para enviar" : transcribing ? "Transcrevendo…" : "Pergunte ou toque no microfone"}
             placeholderTextColor={colors.info}
             style={styles.composerInput}
             multiline
             onSubmitEditing={() => send()}
           />
+          <Pressable
+            testID="copilot-mic"
+            onPress={toggleMic}
+            disabled={loading || transcribing}
+            accessibilityLabel={recording ? "Parar gravação e enviar" : "Falar com o assistente"}
+            style={({ pressed }) => [styles.micBtn, recording && { backgroundColor: colors.error, borderColor: colors.error }, pressed && { opacity: 0.7 }]}
+          >
+            {transcribing ? <ActivityIndicator color={colors.brand} /> : <Ionicons name={recording ? "stop" : "mic"} size={20} color={recording ? "#FFFFFF" : colors.onSurface} />}
+          </Pressable>
           <Pressable testID="copilot-send" onPress={() => send()} disabled={loading || !input.trim()} style={({ pressed }) => [styles.sendBtn, (!input.trim() || loading) && { opacity: 0.5 }, pressed && { opacity: 0.7 }]}>
             <Ionicons name="send" size={20} color={colors.onBrand} />
           </Pressable>
@@ -119,7 +188,7 @@ export default function Copiloto() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong, backgroundColor: colors.surface },
   logoutBtn: { flexDirection: "row", alignItems: "center", gap: spacing.xs, borderWidth: 2, borderColor: colors.error, paddingHorizontal: spacing.sm, paddingVertical: 6, marginRight: spacing.sm },
@@ -145,5 +214,6 @@ const styles = StyleSheet.create({
   msgText: { fontFamily: fonts.mono, fontSize: fontSize.base, color: colors.onSurface, lineHeight: 22 },
   composer: { flexDirection: "row", padding: spacing.md, borderTopWidth: 2, borderTopColor: colors.borderStrong, backgroundColor: colors.surface, gap: spacing.sm, alignItems: "flex-end" },
   composerInput: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingHorizontal: spacing.md, paddingVertical: spacing.md, minHeight: 48, maxHeight: 120, fontFamily: fonts.mono, fontSize: fontSize.base, color: colors.onSurface, backgroundColor: colors.surface },
+  micBtn: { width: 48, height: 48, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceSecondary },
   sendBtn: { width: 48, height: 48, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
-});
+}));

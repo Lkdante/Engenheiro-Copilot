@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
-import { colors, spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
 
 const CHIPS = [
   { id: "checklists", label: "CHECKLISTS" },
@@ -14,6 +15,8 @@ const CHIPS = [
 ];
 
 export default function Inspecoes() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [tab, setTab] = useState("checklists");
   const [items, setItems] = useState<any[]>([]);
@@ -30,7 +33,7 @@ export default function Inspecoes() {
     setLoading(false); setRefresh(false);
   }, [tab]);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -122,7 +125,7 @@ export default function Inspecoes() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   hLabel: { fontFamily: fonts.mono, fontSize: fontSize.xs, letterSpacing: 1.5, color: colors.info, fontWeight: "700" },
@@ -145,4 +148,4 @@ const styles = StyleSheet.create({
   badgeText: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.onSurface, fontWeight: "700", letterSpacing: 0.5 },
   fab: { position: "absolute", bottom: spacing.lg, right: spacing.lg, backgroundColor: colors.brand, borderWidth: 2, borderColor: colors.borderStrong, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   fabText: { color: colors.onBrand, fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5 },
-});
+}));

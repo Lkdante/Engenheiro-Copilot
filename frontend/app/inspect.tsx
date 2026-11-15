@@ -5,9 +5,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { api, getStoredUser } from "@/src/api";
-import { colors, spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { spacing, fonts, fontSize, severityColor } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function InspectScreen() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const router = useRouter();
   const [image, setImage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -15,7 +19,7 @@ export default function InspectScreen() {
 
   const pick = async (cam: boolean) => {
     const perm = cam ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert("Permissão negada");
+    if (!perm.granted) return notifyError("Permissão negada");
     const res = cam ? await ImagePicker.launchCameraAsync({ base64: true, quality: 0.6 }) : await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.6 });
     if (res.canceled || !res.assets?.[0]?.base64) return;
     const b64 = `data:image/jpeg;base64,${res.assets[0].base64}`;
@@ -30,7 +34,7 @@ export default function InspectScreen() {
       const user = await getStoredUser<any>();
       const r = await api("/inspections/analyze", { method: "POST", body: { obra_id: user.obra_id, image_base64: b64 } });
       setResult(r);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message || e)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -96,7 +100,7 @@ export default function InspectScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   back: { width: 40, height: 40, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
@@ -108,7 +112,7 @@ const styles = StyleSheet.create({
   emptyTitle: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.lg, color: colors.onSurface, letterSpacing: -0.3 },
   emptyText: { fontFamily: fonts.mono, fontSize: fontSize.sm, color: colors.info, lineHeight: 20 },
   preview: { width: "100%", height: 280, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surfaceTertiary },
-  busy: { flexDirection: "row", gap: spacing.md, padding: spacing.md, backgroundColor: colors.brandTertiary, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
+  busy: { flexDirection: "row", gap: spacing.md, padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
   busyText: { fontFamily: fonts.mono, fontWeight: "700", letterSpacing: 1 },
   resultBlock: { borderWidth: 2, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surface, gap: spacing.sm },
   metaLine: { fontFamily: fonts.mono, fontSize: fontSize.xs, color: colors.info, fontWeight: "700", letterSpacing: 0.5 },
@@ -124,4 +128,4 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
   actionBtn: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.md, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.surface },
   actionText: { fontFamily: fonts.display, fontWeight: "900", fontSize: fontSize.sm, letterSpacing: 0.5 },
-});
+}));

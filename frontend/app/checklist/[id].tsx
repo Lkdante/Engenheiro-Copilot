@@ -4,15 +4,19 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@/src/api";
-import { colors, spacing, fonts, fontSize } from "@/src/theme";
+import { spacing, fonts, fontSize } from "@/src/theme";
+import { makeStyles, useTheme } from "@/src/settings";
+import { notifyError } from "@/src/notify";
 
 export default function ChecklistDetail() {
+  const { colors } = useTheme();
+  const styles = useStyles();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [c, setC] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => { try { setC(await api(`/checklists/${id}`)); } catch (e: any) { Alert.alert("Erro", String(e?.message)); } setLoading(false); };
+  const load = async () => { try { setC(await api(`/checklists/${id}`)); } catch (e: any) { notifyError("Erro", String(e?.message)); } setLoading(false); };
   useEffect(() => { load(); }, [id]);
 
   const setStatus = async (itemId: string, status: string) => {
@@ -20,7 +24,7 @@ export default function ChecklistDetail() {
       setC((prev: any) => prev ? { ...prev, items: (prev.items || []).map((it: any) => it.id === itemId ? { ...it, status } : it) } : prev);
       const upd = await api(`/checklists/${id}/update-item`, { method: "POST", body: { item_id: itemId, status } });
       setC(upd);
-    } catch (e: any) { Alert.alert("Erro", String(e?.message)); }
+    } catch (e: any) { notifyError("Erro", String(e?.message)); }
   };
 
   if (loading || !c) return <SafeAreaView style={styles.container}><ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /></SafeAreaView>;
@@ -65,7 +69,7 @@ export default function ChecklistDetail() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors, fontSize) => ({
   container: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.lg, borderBottomWidth: 2, borderBottomColor: colors.borderStrong },
   back: { width: 40, height: 40, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
@@ -83,4 +87,4 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", gap: spacing.sm },
   actionBtn: { flex: 1, borderWidth: 2, borderColor: colors.borderStrong, paddingVertical: spacing.sm, alignItems: "center", backgroundColor: colors.surface },
   actionText: { fontFamily: fonts.mono, fontWeight: "700", color: colors.onSurface, letterSpacing: 0.5, fontSize: fontSize.sm },
-});
+}));

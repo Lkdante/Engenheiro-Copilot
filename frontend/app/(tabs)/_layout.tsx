@@ -1,8 +1,22 @@
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
+import { useEffect } from "react";
+import { getActiveObra, getStoredUser } from "@/src/api";
 import { Ionicons } from "@expo/vector-icons";
-import { colors, fonts, fontSize } from "@/src/theme";
+import { fontFor } from "@/src/theme";
+import { useTheme } from "@/src/settings";
 
 export default function TabsLayout() {
+  const { colors, fontSize, isDark, settings } = useTheme();
+  const router = useRouter();
+
+  // A área da obra exige login e uma obra escolhida no menu
+  useEffect(() => {
+    (async () => {
+      if (!(await getStoredUser())) return router.replace("/(auth)/login");
+      if (!(await getActiveObra())) router.replace("/obras");
+    })();
+  }, [router]);
+
   return (
     <Tabs
       screenOptions={{
@@ -11,16 +25,15 @@ export default function TabsLayout() {
         tabBarInactiveTintColor: colors.info,
         tabBarStyle: {
           backgroundColor: colors.surface,
-          borderTopWidth: 2,
-          borderTopColor: colors.borderStrong,
+          borderTopWidth: settings.highContrast ? 2 : 1,
+          borderTopColor: colors.border,
           height: 68,
           paddingTop: 6,
           paddingBottom: 10,
         },
         tabBarLabelStyle: {
-          fontFamily: fonts.mono,
+          ...fontFor("600"),
           fontSize: fontSize.xs,
-          fontWeight: "700",
           letterSpacing: 0.5,
         },
       }}

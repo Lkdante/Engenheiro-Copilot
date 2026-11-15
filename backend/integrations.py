@@ -193,3 +193,59 @@ def send_whatsapp(phone: str, message: str) -> dict:
     if r.status_code >= 300:
         return {"sent": False, "mode": "error", "detail": f"API WhatsApp {r.status_code}: {r.text[:300]}", "link": wa_link(to, message)}
     return {"sent": True, "mode": "api", "response": r.json()}
+
+
+# ------------------------------------------------- FUNCIONÁRIOS DA OBRA (EXCEL)
+WORKER_IMPORT_COLUMNS = {
+    "nome": "name", "funcionário": "name", "funcionario": "name", "trabalhador": "name", "colaborador": "name",
+    "função": "role", "funcao": "role", "cargo": "role",
+    "empresa": "company", "empreiteira": "company",
+    "setor": "sector", "equipe": "sector",
+    "admissão": "admission_date", "admissao": "admission_date", "data de admissão": "admission_date",
+}
+
+
+def workers_template() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Funcionários"
+    ws.append(["Nome", "Função", "Empresa", "Setor", "Admissão"])
+    for c in ws[1]:
+        c.fill, c.font = HEADER_FILL, HEADER_FONT
+    ws.append(["João Pereira", "Pedreiro", "Construtora ABC", "Alvenaria", datetime.now().strftime("%d/%m/%Y")])
+    ws.append(["Maria Souza", "Eletricista", "Elétrica XYZ", "Instalações", datetime.now().strftime("%d/%m/%Y")])
+    for i in range(1, 6):
+        ws.column_dimensions[get_column_letter(i)].width = 24
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def parse_workers_sheet(content: bytes) -> tuple[list[dict], list[str]]:
+    """Lê a planilha de funcionários. Retorna (registros, avisos)."""
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], ["Planilha vazia"]
+    header = [str(h or "").strip().lower() for h in rows[0]]
+    mapping = {i: WORKER_IMPORT_COLUMNS[h] for i, h in enumerate(header) if h in WORKER_IMPORT_COLUMNS}
+    if "name" not in mapping.values():
+        return [], ["A planilha precisa de uma coluna 'Nome'. Baixe o modelo no cadastro da obra."]
+    records, errors = [], []
+    for n, row in enumerate(rows[1:], start=2):
+        if not any(v not in (None, "") for v in row):
+            continue
+        rec = {field: row[i] for i, field in mapping.items() if i < len(row)}
+        name = str(rec.get("name") or "").strip()
+        if not name:
+            errors.append(f"Linha {n}: nome vazio, ignorada")
+            continue
+        records.append({
+            "name": name,
+            "role": str(rec.get("role") or "").strip(),
+            "company": str(rec.get("company") or "").strip(),
+            "sector": str(rec.get("sector") or "").strip(),
+            "admission_date": _to_date(rec.get("admission_date")),
+        })
+    return records, errors
